@@ -1,6 +1,14 @@
+# Introduction
+
+The rocknbot repo contains code for a state-of-the-art RAG application. The application logic is implemented in a FastAPI program that can be accessed via Slack or the web. A Slack application and a web application have been provided to demonstrate usage.
+
 # Lil Lisa
 
 Lil Lisa is an application that is responsible for integrating with Slack and handling incoming user events. It acts as a bridge between Slack's platform and the conversational AI experience provided by API calls to a concurrently-running FastAPI application.
+
+# LilLisa Web
+
+LilLisa Web is a web application frontend for LilLisa Server.
 
 # LilLisa Server
 
