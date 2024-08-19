@@ -24,7 +24,7 @@ Zipped folder containing code that was used to evaluate the retrieval techniques
 
 # Presentation
 
-PDF file documenting the results of the experimentation
+PDF file documenting the results of the experimentation.
 
 # Report
 
