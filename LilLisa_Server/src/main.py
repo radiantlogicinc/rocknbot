@@ -644,14 +644,13 @@ async def rebuild_docs(encrypted_key: str) -> str:
             "github_url"
         ]
 
-        all_nodes = []
-
         for product, repo_branches in product_repos_dict.items():
             product_dir = os.path.join(DOCUMENTATION_FOLDERPATH, product)
             os.makedirs(product_dir, exist_ok=True)
 
             max_retries = 5
 
+            all_nodes = []
             for repo_url, branches in repo_branches:
                 for branch in branches:
                     repo_name = repo_url.rsplit("/", 1)[-1].replace(".git", "")
