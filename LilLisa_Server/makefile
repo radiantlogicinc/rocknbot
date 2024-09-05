@@ -26,13 +26,13 @@ _lint:
 	bandit -c pyproject.toml -r .
 
 _build-local:
-	docker build -f ./build/dockerfile_local -t lil-lisa-server-local:2.1.0 .
+	docker build -f ./build/dockerfile_local -t lil-lisa-server-local:2.1.2 .
 
 _build-cloud:
-	docker build -f ./build/dockerfile_cloud -t lil-lisa-server:2.1.0 .
+	docker build -f ./build/dockerfile_cloud -t lil-lisa-server:2.1.2 .
 
 _build-cloud-lambda:
-	docker build -f ./build/dockerfile_cloud_lambda -t lil-lisa-server-lambda:2.1.0 .
+	docker build -f ./build/dockerfile_cloud_lambda -t lil-lisa-server-lambda:2.1.2 .
 
 build-local: _lint _build-local
 
@@ -41,11 +41,11 @@ build-cloud: _lint _build-cloud
 update-env: environment.yml
 	conda env update --file environment.yml --prune
 
-run-local: 
-	docker run -d -p 8000:8000 --name=lil-lisa-server lil-lisa-server-local:2.1.0
+run-local:
+	docker run -d -p 8000:8000 --name=lil-lisa-server lil-lisa-server-local:2.1.2
 
 run-cloud:
-	docker run -d -p 8000:8000 --name=lil-lisa-server lil-lisa-server:2.1.0
+	docker run -d -p 8000:8000 --name=lil-lisa-server lil-lisa-server:2.1.2
 
 # has to be done in terminal
 push-image-to-aws:
@@ -53,6 +53,6 @@ push-image-to-aws:
 	AWS_REGION=$(aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text)
 	aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
 	IMAGE='lil-lisa-server'
-	TAG='2.1.0'
+	TAG='2.1.2'
 	docker tag ${IMAGE}:${TAG} ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}:${TAG}
 	docker push ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}:${TAG}
