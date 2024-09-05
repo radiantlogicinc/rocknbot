@@ -52,9 +52,6 @@ async def handle_message_events(event, say):
         event (dict): The Slack message event object.
         say (function): A function used to send messages in Slack.
     """
-    # immediately send an ack to slack to prevent receiving the same message multiple times
-    # https://github.com/slackapi/bolt-python/issues/764
-    await app.client.ack()
 
     channel_id = event["channel"]
     thread_ts = event.get("thread_ts")
