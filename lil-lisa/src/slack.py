@@ -34,8 +34,8 @@ SECRET_AUTHENTICATION_KEY = lil_lisa_env["AUTHENTICATION_KEY"]
 ENCRYPTED_AUTHENTICATION_KEY = jwt.encode({"some": "payload"}, SECRET_AUTHENTICATION_KEY, algorithm="HS256")  # type: ignore
 
 REMOTE_NAME = lil_lisa_env["REMOTE_NAME"]
+BASE_URL = os.getenv("LIL_LISA_SERVER_URL", lil_lisa_env["LIL_LISA_SERVER_URL"])
 
-BASE_URL = lil_lisa_env["LIL_LISA_SERVER_URL"]
 TIMEOUT = 10
 app = AsyncApp(token=SLACK_BOT_TOKEN)
 

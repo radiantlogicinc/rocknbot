@@ -61,25 +61,7 @@ class LogRecordNs(logging.LogRecord):  # pylint: disable=too-few-public-methods
         super().__init__(*args, **kwargs)
 
 
-logging.basicConfig(level=logging.NOTSET)
-
-
-class FormatterNs(logging.Formatter):
-    """nanosecond log formatter"""
-
-    default_nsec_format = "%Y-%m-%dT%H:%M:%S.%09dZ"
-
-    def formatTime(self, record, datefmt=None):
-        if datefmt is not None:  # Do not handle custom formats here ...
-            return super().formatTime(record, datefmt)  # ... leave to original implementation
-        return format_ns(record.created_ns)
-
-
-logging.setLogRecordFactory(LogRecordNs)
-
-LOG_FORMAT = "%(asctime)s - %(levelname)s - %(filename)s-%(funcName)s - %(message)s"
-log_formatter = FormatterNs(LOG_FORMAT)
-
+LOG_LEVEL = logging.DEBUG if __debug__ else logging.INFO
 if log_level := LILLISA_SERVER_ENV_DICT["LOG_LEVEL"]:
     if log_level == "DEBUG":
         LOG_LEVEL = logging.DEBUG
@@ -94,8 +76,24 @@ if log_level := LILLISA_SERVER_ENV_DICT["LOG_LEVEL"]:
     else:
         raise ValueError("LOG_LEVEL is not one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
 else:
-    print("LOG_LEVEL env variable is not specified in access_review.env")
-    LOG_LEVEL = logging.DEBUG if __debug__ else logging.INFO
+    print("LOG_LEVEL env variable is not specified in env file or environment variable")
+logging.basicConfig(level=LOG_LEVEL)
+
+
+class FormatterNs(logging.Formatter):
+    """nanosecond log formatter"""
+
+    default_nsec_format = "%Y-%m-%dT%H:%M:%S.%09dZ"
+
+    def formatTime(self, record, datefmt=None):
+        if datefmt is not None:  # Do not handle custom formats here ...
+            return super().formatTime(record, datefmt)  # ... leave to original implementation
+        return format_ns(record.created_ns)
+
+logging.setLogRecordFactory(LogRecordNs)
+
+LOG_FORMAT = "%(asctime)s - %(levelname)s - %(filename)s-%(funcName)s - %(message)s"
+log_formatter = FormatterNs(LOG_FORMAT)
 
 # create logger
 logger = logging.getLogger("RL_Logger")

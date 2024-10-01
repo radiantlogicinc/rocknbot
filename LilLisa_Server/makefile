@@ -1,5 +1,13 @@
 SHELL = /bin/bash
 
+APP_NAMESPACE=LilLisa_Server
+
+AWS_ACCOUNT = $(shell aws sts get-caller-identity --query 'Account' --output text)
+AWS_REGION = $(shell aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text)
+
+IMAGE=lil-lisa-server
+TAG=2.1.4
+
 .EXPORT_ALL_VARIABLES:
 
 .PHONY: _include-env
@@ -26,13 +34,13 @@ _lint:
 	bandit -c pyproject.toml -r .
 
 _build-local:
-	docker build -f ./build/dockerfile_local -t lil-lisa-server-local:2.1.3 .
+	docker build -f ./build/dockerfile_local -t ${IMAGE}-local:${TAG} .
 
 _build-cloud:
-	docker build -f ./build/dockerfile_cloud -t lil-lisa-server:2.1.3 .
+	docker build -f ./build/dockerfile_cloud -t ${IMAGE}:${TAG} .
 
 _build-cloud-lambda:
-	docker build -f ./build/dockerfile_cloud_lambda -t lil-lisa-server-lambda:2.1.3 .
+	docker build -f ./build/dockerfile_cloud_lambda -t ${IMAGE}-lambda:${TAG} .
 
 build-local: _lint _build-local
 
@@ -42,17 +50,13 @@ update-env: environment.yml
 	conda env update --file environment.yml --prune
 
 run-local:
-	docker run -d -p 8000:8000 --name=lil-lisa-server lil-lisa-server-local:2.1.3
+	docker run -d -p 8000:8000 --name=${IMAGE} ${IMAGE}-local:${TAG}
 
 run-cloud:
-	docker run -d -p 8000:8000 --name=lil-lisa-server lil-lisa-server:2.1.3
+	docker run -d -p 8000:8000 --name=${IMAGE} ${IMAGE}:${TAG}
 
 # has to be done in terminal
 push-image-to-aws:
-	AWS_ACCOUNT=$(aws sts get-caller-identity --query 'Account' --output text)
-	AWS_REGION=$(aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text)
 	aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
-	IMAGE='lil-lisa-server'
-	TAG='2.1.3'
 	docker tag ${IMAGE}:${TAG} ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}:${TAG}
 	docker push ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}:${TAG}
