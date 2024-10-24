@@ -6,7 +6,7 @@ AWS_ACCOUNT = $(shell aws sts get-caller-identity --query 'Account' --output tex
 AWS_REGION = $(shell aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text)
 
 IMAGE=lil-lisa
-TAG=2.1.6
+TAG=2.1.7
 
 .EXPORT_ALL_VARIABLES:
 
@@ -47,10 +47,10 @@ update-env: environment.yml
 	conda env update --file environment.yml --prune
 
 run-local:
-	docker run -d -p 8000:8000 --name=${IMAGE} ${IMAGE}-local:${TAG}
+	docker run -d --name=${IMAGE} ${IMAGE}-local:${TAG}
 
 run-cloud:
-	docker run -d -p 8000:8000 --name=${IMAGE} ${IMAGE}:${TAG}
+	docker run -d --name=${IMAGE} ${IMAGE}:${TAG}
 
 # has to be done in terminal
 push-image-to-aws:

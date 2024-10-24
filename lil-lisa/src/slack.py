@@ -35,6 +35,8 @@ ENCRYPTED_AUTHENTICATION_KEY = jwt.encode({"some": "payload"}, SECRET_AUTHENTICA
 
 REMOTE_NAME = lil_lisa_env["REMOTE_NAME"]
 BASE_URL = os.getenv("LIL_LISA_SERVER_URL", lil_lisa_env["LIL_LISA_SERVER_URL"])
+BASE_URL = BASE_URL.rstrip('/')     # this is IMPORTANT! Otherwise you will see {"detail": "Not Found"} in the response
+logger.info(f"LIL_LISA_SERVER_URL: {BASE_URL}")
 
 TIMEOUT = 10
 app = AsyncApp(token=SLACK_BOT_TOKEN)

@@ -19,5 +19,7 @@ COPY src /app/src
 # # Expose any necessary ports (if applicable)
 # EXPOSE 80
 
+ENV PYTHONUNBUFFERED=1
+
 # Define the command to run your app in release mode (so log level is INFO)
 ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa", "python", "-O", "src/slack.py"]

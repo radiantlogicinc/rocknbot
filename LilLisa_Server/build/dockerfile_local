@@ -24,5 +24,7 @@ RUN mkdir speedict
 # Expose any necessary ports (if applicable)
 # EXPOSE 8000
 
+ENV PYTHONUNBUFFERED=1
+
 # Define the command to run your app in release mode (so log level is INFO)
-CMD ["conda", "run", "-n", "LilLisa_Server", "uvicorn", "src.main:app", "--host=0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "LilLisa_Server", "uvicorn", "src.main:app", "--host=0.0.0.0", "--port", "8000"]

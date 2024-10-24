@@ -80,12 +80,10 @@ async def lifespan(_app: FastAPI):
     if react_agent_prompt_filepath := lillisa_server_env["REACT_AGENT_PROMPT_FILEPATH"]:
         react_agent_prompt_filepath = str(react_agent_prompt_filepath)
     else:
-        traceback.print_exc()
         utils.logger.critical("REACT_AGENT_PROMPT_FILEPATH not found in lillisa_server.env")
         raise ValueError("REACT_AGENT_PROMPT_FILEPATH not found in lillisa_server.env")
 
     if not os.path.exists(react_agent_prompt_filepath):
-        traceback.print_exc()
         utils.logger.critical("%s not found", react_agent_prompt_filepath)
         raise NotImplementedError(f"{react_agent_prompt_filepath} not found")
 
@@ -95,75 +93,64 @@ async def lifespan(_app: FastAPI):
     if lancedb_folderpath := lillisa_server_env["LANCEDB_FOLDERPATH"]:
         LANCEDB_FOLDERPATH = str(lancedb_folderpath)
     else:
-        traceback.print_exc()
         utils.logger.critical("LANCEDB_FOLDERPATH not found in lillisa_server.env")
         raise ValueError("LANCEDB_FOLDERPATH not found in lillisa_server.env")
 
     if not os.path.exists(LANCEDB_FOLDERPATH):
-        traceback.print_exc()
         utils.logger.critical("%s not found", LANCEDB_FOLDERPATH)
         raise NotImplementedError(f"{LANCEDB_FOLDERPATH} not found")
 
     if authentication_key := lillisa_server_env["AUTHENTICATION_KEY"]:
         AUTHENTICATION_KEY = str(authentication_key)
     else:
-        traceback.print_exc()
         utils.logger.critical("AUTHENTICATION_KEY not found in lillisa_server.env")
         raise ValueError("AUTHENTICATION_KEY not found in lillisa_server.env")
 
     if documentation_folderpath := lillisa_server_env["DOCUMENTATION_FOLDERPATH"]:
         DOCUMENTATION_FOLDERPATH = str(documentation_folderpath)
     else:
-        traceback.print_exc()
         utils.logger.critical("DOCUMENTATION_FOLDERPATH not found in lillisa_server.env")
         raise ValueError("DOCUMENTATION_FOLDERPATH not found in lillisa_server.env")
 
     if qa_pairs_github_repo_url := lillisa_server_env["QA_PAIRS_GITHUB_REPO_URL"]:
         QA_PAIRS_GITHUB_REPO_URL = str(qa_pairs_github_repo_url)
     else:
-        traceback.print_exc()
         utils.logger.critical("QA_PAIRS_GITHUB_REPO_URL not found in lillisa_server.env")
         raise ValueError("QA_PAIRS_GITHUB_REPO_URL not found in lillisa_server.env")
 
     if qa_pairs_folderpath := lillisa_server_env["QA_PAIRS_FOLDERPATH"]:
         QA_PAIRS_FOLDERPATH = str(qa_pairs_folderpath)
     else:
-        traceback.print_exc()
         utils.logger.critical("QA_PAIRS_FOLDERPATH not found in lillisa_server.env")
         raise ValueError("QA_PAIRS_FOLDERPATH not found in lillisa_server.env")
     
     if documentation_new_versions := lillisa_server_env["DOCUMENTATION_NEW_VERSIONS"]:
         DOCUMENTATION_NEW_VERSIONS = str(documentation_new_versions).split(", ")
     else:
-        traceback.print_exc()
         utils.logger.critical("DOCUMENTATION_NEW_VERSIONS not found in lillisa_server.env")
         raise ValueError("DOCUMENTATION_NEW_VERSIONS not found in lillisa_server.env")
     
     if documentation_eoc_versions := lillisa_server_env["DOCUMENTATION_EOC_VERSIONS"]:
         DOCUMENTATION_EOC_VERSIONS = str(documentation_eoc_versions).split(", ")
     else:
-        traceback.print_exc()
         utils.logger.critical("DOCUMENTATION_EOC_VERSIONS not found in lillisa_server.env")
         raise ValueError("DOCUMENTATION_EOC_VERSIONS not found in lillisa_server.env")
     
     if documentation_identity_analytics_versions := lillisa_server_env["DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS"]:
         DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS = str(documentation_identity_analytics_versions).split(", ")
     else:
-        traceback.print_exc()
         utils.logger.critical("DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS not found in lillisa_server.env")
         raise ValueError("DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS not found in lillisa_server.env")
     
     if documentation_ia_product_versions := lillisa_server_env["DOCUMENTATION_IA_PRODUCT_VERSIONS"]:
         DOCUMENTATION_IA_PRODUCT_VERSIONS = str(documentation_ia_product_versions).split(", ")
     else:
-        traceback.print_exc()
         utils.logger.critical("DOCUMENTATION_IA_PRODUCT_VERSIONS not found in lillisa_server.env")
         raise ValueError("DOCUMENTATION_IA_PRODUCT_VERSIONS not found in lillisa_server.env")
     
     if documentation_ia_selfmanaged_versions := lillisa_server_env["DOCUMENTATION_IA_SELFMANAGED_VERSIONS"]:
         DOCUMENTATION_IA_SELFMANAGED_VERSIONS = str(documentation_ia_selfmanaged_versions).split(", ")
     else:
-        traceback.print_exc()
         utils.logger.critical("DOCUMENTATION_IA_SELFMANAGED_VERSIONS not found in lillisa_server.env")
         raise ValueError("DOCUMENTATION_IA_SELFMANAGED_VERSIONS not found in lillisa_server.env")
 
@@ -237,7 +224,7 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
     """
     try:
         utils.logger.info(
-            "session_id: %d, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query
+            "session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query
         )
 
         llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
@@ -261,7 +248,7 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
         react_agent = ReActAgent.from_tools(
             tools=[handle_user_answer_tool, improve_query_tool, answer_from_document_retrieval_tool],
             llm=llm,
-            verbose=True,
+            verbose=True if utils.LOG_LEVEL == utils.logging.DEBUG else False
         )
 
         react_agent_prompt = (

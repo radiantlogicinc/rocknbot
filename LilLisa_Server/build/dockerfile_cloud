@@ -25,5 +25,7 @@ COPY src /app/src
 
 RUN mkdir speedict
 
+ENV PYTHONUNBUFFERED=1
+
 # Set the CMD to your handler
-CMD ["conda", "run", "-n", "LilLisa_Server", "uvicorn", "src.main:app", "--host=0.0.0.0"]
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "LilLisa_Server", "uvicorn", "src.main:app", "--host=0.0.0.0"]

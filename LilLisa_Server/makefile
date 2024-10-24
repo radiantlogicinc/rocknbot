@@ -6,7 +6,7 @@ AWS_ACCOUNT = $(shell aws sts get-caller-identity --query 'Account' --output tex
 AWS_REGION = $(shell aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text)
 
 IMAGE=lil-lisa-server
-TAG=2.1.4
+TAG=2.1.5
 
 .EXPORT_ALL_VARIABLES:
 
