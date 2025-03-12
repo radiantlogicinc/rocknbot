@@ -295,7 +295,7 @@ async def record_endorsement(session_id: str, is_expert: bool) -> str:
     * For HTTP 422 and 500: The error info will be returned in the response json
     """
     try:
-        utils.logger.info("session_id: %d, is_expert: %s", session_id, is_expert)
+        utils.logger.info("session_id: %s, is_expert: %s", session_id, is_expert)
 
         llsc = get_llsc(session_id)
         llsc.record_endorsement(is_expert)
