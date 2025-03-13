@@ -1,3 +1,5 @@
+*slack_history*
+
 # Ignore mypy cache
 .mypy_cache/
 
