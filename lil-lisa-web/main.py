@@ -503,8 +503,8 @@ def index():
       <div id="common-input-area">
         <input type="text" id="query-input" placeholder="Type Your Question Here..." autocomplete="off">
         <button id="send-btn" onclick="sendQuery()">Send Query</button>
-        <div class="checkbox-container" id="start-new-chat-checkbox-container" style="display: none;">
-          <input type="checkbox" id="start-new-chat-checkbox" onclick="handleCheckboxClick()">
+        <div class="checkbox-container" id="start-new-chat-checkbox-container" style="display: inline-block;">
+          <input type="checkbox" id="start-new-chat-checkbox">
           <span class="tooltip">Start New Chat</span>
         </div>
       </div>
@@ -637,7 +637,7 @@ def index():
       docLinksContainer.innerHTML = "";
       if (inputArea) inputArea.style.display = "flex";
       if (startNewChatBtn) startNewChatBtn.style.display = "none";
-      if (newChatCheckboxContainer) newChatCheckboxContainer.style.display = "none";
+      if (newChatCheckboxContainer) newChatCheckboxContainer.style.display = "inline-block";
       // Populate documentation links based on product
       if (product === "IDDM") {
         docLinksContainer.innerHTML =
@@ -661,8 +661,6 @@ def index():
       chatArea.style.display = "none";
       const startNewChatBtn = document.getElementById('start-new-chat-button');
       if (startNewChatBtn) startNewChatBtn.style.display = "none";
-      const newChatCheckboxContainer = document.getElementById('start-new-chat-checkbox-container');
-      if (newChatCheckboxContainer) newChatCheckboxContainer.style.display = "none";
     }
 
     async function sendQuery() {
@@ -670,6 +668,12 @@ def index():
       if (!currentProduct) return;
       const queryInput = document.getElementById('query-input');
       if (!queryInput || !queryInput.value.trim()) return;
+      // If the New Chat checkbox is checked, trigger a new chat before sending the query
+      const newChatCheckbox = document.getElementById('start-new-chat-checkbox');
+      if(newChatCheckbox && newChatCheckbox.checked) {
+          newChat(currentProduct);
+          newChatCheckbox.checked = false;
+      }
       const userQuery = queryInput.value.trim();
       appendMessage(userQuery, 'user');
       queryInput.value = '';
@@ -769,12 +773,6 @@ def index():
         }
       }
       return "";
-    }
-
-    function handleCheckboxClick() {
-      // Reset chat when checkbox is clicked
-      newChat(currentProduct);
-      document.getElementById('start-new-chat-checkbox').checked = false;
     }
 
     window.onload = function() {
