@@ -1,0 +1,21 @@
+# Dockerfile_local
+FROM continuumio/miniconda3:latest
+
+WORKDIR /app
+
+COPY environment.yml /app/
+RUN conda env create -f environment.yml
+
+COPY main.py .
+COPY lil-lisa-web.env .
+
+RUN pip install --no-cache-dir flask requests
+
+EXPOSE 8000
+
+# Set default environment variables for local deployment
+ENV APP_NAMESPACE=lil-lisa-web
+ENV LOCAL_PORT=8000
+ENV DEPLOYMENT_MODE=local
+
+CMD ["conda", "run", "-n", "lil-lisa-web", "python", "main.py"]

@@ -16,3 +16,6 @@ dependencies:
     - requests==2.31.0
     - pyjwt==2.8.0
     - uvicorn>=0.29
+    - flask==2.1.0
+    - flask[async]
+    - python-dotenv==1.0.1

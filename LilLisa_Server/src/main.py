@@ -256,7 +256,10 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
             .replace("<CONVERSATION_HISTORY>", conversation_history)
             .replace("<QUERY>", nl_query)
         )
+        start_time = time.time()
         response = react_agent.chat(react_agent_prompt).response
+        elapsed_time = time.time() - start_time
+        utils.logger.info("Elapsed time: %s", elapsed_time)
         llsc.add_to_conversation_history("User", nl_query)
         llsc.add_to_conversation_history("Assistant", response)
         return response
@@ -266,13 +269,54 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
     except Exception as exc:  # pylint: disable=broad-except
         traceback.print_exc()
         utils.logger.critical(
-            "Internal error in invoke() for session_id: %s and nl_query: %s. Error: %s", session_id, nl_query, exc
+            "Lil lisa Server- Internal error in invoke() for session_id: %s and nl_query: %s. Error: %s", session_id, nl_query, exc
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error in invoke() for session_id: {session_id} and nl_query: {nl_query}",
         ) from exc
 
+
+# @app.post(
+#     "/record_endorsement/",
+#     response_model=str,
+#     response_class=PlainTextResponse,
+#     summary="Record the endorsement for the conversation",
+#     response_description="ok",
+#     responses={
+#         200: {"description": "Response successfully returned", "content": "ok"},
+#         404: {"description": "Session id is not found"},
+#         422: {"description": "Input parameters failed validation"},
+#         500: {"description": "Internal error. Review logs for details"},
+#     },
+# )
+# async def record_endorsement(session_id: str, is_expert: bool) -> str:
+#     """
+#     * session_id cannot be empty
+#     * is_expert must be True or False
+#     * response: string
+#     * For HTTP 422 and 500: The error info will be returned in the response json
+#     """
+#     try:
+#         utils.logger.info("session_id: %s, is_expert: %s", session_id, is_expert)
+
+#         llsc = get_llsc(session_id)
+#         llsc.record_endorsement(is_expert)
+#         return "ok"
+#     except HTTPException as exc:
+#         raise exc
+#     except Exception as exc:  # pylint: disable=broad-except
+#         traceback.print_exc()
+#         utils.logger.critical(
+#             "Internal error in record_endorsement() for session_id: %s and is_expert: %s. Error: %s",
+#             session_id,
+#             is_expert,
+#             exc,
+#         )
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail=f"Internal error in record_endorsement() for session_id: {session_id} and is_expert: {is_expert}",
+#         ) from exc
 
 @app.post(
     "/record_endorsement/",
@@ -287,32 +331,35 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
         500: {"description": "Internal error. Review logs for details"},
     },
 )
-async def record_endorsement(session_id: str, is_expert: bool) -> str:
+async def record_endorsement(session_id: str, is_expert: bool, thumbs_up: bool) -> str:
     """
     * session_id cannot be empty
     * is_expert must be True or False
+    * thumbs_up must be True (for thumbs up) or False (for thumbs down)
     * response: string
     * For HTTP 422 and 500: The error info will be returned in the response json
     """
     try:
-        utils.logger.info("session_id: %s, is_expert: %s", session_id, is_expert)
+        utils.logger.info("session_id: %s, is_expert: %s, thumbs_up: %s", session_id, is_expert, thumbs_up)
 
         llsc = get_llsc(session_id)
-        llsc.record_endorsement(is_expert)
+        # Update the call to pass the reaction type
+        llsc.record_endorsement(is_expert, thumbs_up)
         return "ok"
     except HTTPException as exc:
         raise exc
     except Exception as exc:  # pylint: disable=broad-except
         traceback.print_exc()
         utils.logger.critical(
-            "Internal error in record_endorsement() for session_id: %s and is_expert: %s. Error: %s",
+            "Internal error in record_endorsement() for session_id: %s, is_expert: %s, thumbs_up: %s. Error: %s",
             session_id,
             is_expert,
+            thumbs_up,
             exc,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error in record_endorsement() for session_id: {session_id} and is_expert: {is_expert}",
+            detail=f"Internal error in record_endorsement() for session_id: {session_id}, is_expert: {is_expert}, thumbs_up: {thumbs_up}",
         ) from exc
 
 
@@ -755,4 +802,5 @@ def home():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000, lifespan="on")
+    uvicorn.run(app, host="127.0.0.1", port=8080, lifespan="on")
+# python -m uvicorn src.main:app --reload
