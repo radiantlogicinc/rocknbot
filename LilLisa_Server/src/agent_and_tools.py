@@ -183,7 +183,7 @@ def update_retriever(retriever_name, new_retriever):
 
 def handle_user_answer(answer: str) -> str:
     """
-    Tool should be caleld when a user enters an answer to a previous question of theirs. Thank them and merely mimic their answer.
+    Tool should be called when a user enters an answer to a previous question of theirs. Thank them and merely mimic their answer.
     """
     return answer
 
@@ -265,23 +265,24 @@ def answer_from_document_retrieval(
 
     # Categorize the nodes
     for node in qa_nodes:
-        if 0.9 <= node.score <= 1.0:
-            exact_qa_nodes.append(node)
-        elif 0.8 <= node.score < 0.9:
+        if 0.85 <= node.score <= 1.0:
             relevant_qa_nodes.append(node)
-        elif 0.7 <= node.score < 0.8:
+        # elif 0.8 <= node.score < 0.95:
+            # relevant_qa_nodes.append(node)
+        elif 0.7 <= node.score < 0.85:
             potentially_relevant_qa_nodes.append(node)
 
-    if exact_qa_nodes:
-        response += "Found matching QA pairs that have been verified by an expert!\n"
-        for idx, node in enumerate(exact_qa_nodes, start=1):
-            response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
-        return response
+    # if exact_qa_nodes:
+    #     response += "Found matching QA pairs that have been verified by an expert!\n"
+    #     for idx, node in enumerate(exact_qa_nodes, start=1):
+    #         response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
+    #     return response
     if relevant_qa_nodes:
         response += "Here are some relevant QA pairs that have been verified by an expert!\n"
         for idx, node in enumerate(relevant_qa_nodes, start=1):
             response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
         response += "\n\nAfter searching through the documentation database, this was found:\n"
+
     nodes = document_retriever.retrieve(query)
     reranked_nodes = RERANKER.postprocess_nodes(nodes=nodes, query_str=query)[:10]
     useful_links = list(dict.fromkeys([node.metadata['github_url'] for node in reranked_nodes]))[:3]

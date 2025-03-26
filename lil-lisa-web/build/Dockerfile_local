@@ -1,0 +1,25 @@
+FROM continuumio/miniconda3:latest
+
+# Prepare conda
+RUN conda update conda && conda update --all
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the environment file (environment.yml) from the correct location
+COPY environment.yml /app/
+
+# Create the conda environment
+RUN conda env create -f environment.yml
+
+# Copy your web server code
+COPY main.py /app/
+
+# Copy the .env file containing environment variables
+COPY lil-lisa-web.env /app/
+
+# Ensure logs are unbuffered
+ENV PYTHONUNBUFFERED=1
+
+# Run your web server using conda run with no-capture-output
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa-web", "python", "main.py"]

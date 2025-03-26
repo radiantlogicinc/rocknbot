@@ -1,0 +1,820 @@
+import os
+import re
+import uuid
+import json
+import traceback
+import requests
+from flask import Flask, request, jsonify
+from dotenv import load_dotenv, dotenv_values
+import logging
+
+
+# Load environment variables from the specified .env file
+load_dotenv('lil-lisa-web.env')
+
+lil_lisa_env = dotenv_values('lil-lisa-web.env')
+
+
+# Set the base URL for API requests, defaulting to localhost if not specified
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+BASE_URL = os.getenv("LIL_LISA_SERVER_URL", lil_lisa_env.get("LIL_LISA_SERVER_URL"))
+
+if not BASE_URL:
+    raise ValueError("LIL_LISA_SERVER_URL environment variable is not set")
+else:
+    BASE_URL = BASE_URL.rstrip('/')  # Remove trailing slash to avoid endpoint issues
+    logger.info(f"Using LIL_LISA_SERVER_URL: {BASE_URL}")
+
+# Initialize the Flask application
+app = Flask(__name__)
+
+def generate_unique_session_id() -> str:
+    # Generate a unique session ID using UUID version 4
+    return str(uuid.uuid4())
+
+def format_response(response: str) -> str:
+    """
+    Convert LLM text to HTML by transforming markdown-like lists, bold text, and links.
+    """
+    # Split response into lines for individual processing
+    lines = response.split("\n")
+    formatted = ""
+    in_list = False
+    for line in lines:
+        stripped = line.strip()
+        # Identify and format list items starting with '-' or '*'
+        if stripped.startswith("-") or stripped.startswith("*"):
+            if not in_list:
+                formatted += "<ul>"
+                in_list = True
+            formatted += "<li>" + stripped[2:].strip() + "</li>"
+        else:
+            if in_list:
+                formatted += "</ul>"
+                in_list = False
+            # Append non-list lines with a line break
+            formatted += line + "<br>"
+    if in_list:
+        formatted += "</ul>"
+    # Transform bold markdown (**text**) to HTML <strong> tags
+    formatted = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted)
+    # Convert various link formats to HTML <a> tags
+    formatted = re.sub(r'\(([^)]+)\) \((https?://\S+)\)', r'<a href="\2">\1</a>', formatted)  # (text) (url)
+    formatted = re.sub(r'\[([^\]]+)\]\((https?://\S+)\)', r'<a href="\2">\1</a>', formatted)  # [text](url)
+    formatted = re.sub(r'([^\(]+) \((https?://\S+)\)', r'<a href="\2">\1</a>', formatted)    # text (url)
+    formatted = re.sub(r'(https?://\S+)', r'<a href="\1">\1</a>', formatted)                # bare URLs
+    return formatted
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    # Extract JSON data from the incoming request
+    data = request.get_json()
+    session_id = data.get("session_id")
+    product = data.get("product")
+    nl_query = data.get("query")
+    locale = data.get("locale", "en-US")
+    is_expert = data.get("is_expert", False)
+    
+    # Generate a new session ID if none is provided
+    if not session_id:
+        session_id = generate_unique_session_id()
+
+    try:
+        # Construct the API endpoint URL dynamically
+        invoke_url = f"{BASE_URL}/invoke/"
+        # Define parameters for the backend API request
+        params = {
+            "session_id": session_id,
+            "locale": locale,
+            "product": product,
+            "nl_query": nl_query,
+            "is_expert_answering": is_expert
+        }
+        # Send POST request to the backend API with a 60-second timeout
+        resp = requests.post(invoke_url, params=params, timeout=60)
+        resp.raise_for_status()
+        # Format the API response into HTML
+        formatted_answer = format_response(resp.text)
+    except Exception as e:
+        # Log the exception stack trace for debugging
+        traceback.print_exc()
+        # Return an error message if the request fails
+        formatted_answer = f"Internal error: {str(e)}"
+
+    # Return the formatted response and session ID as JSON
+    return jsonify({"answer": formatted_answer, "session_id": session_id})
+
+@app.route("/api/thumbsup", methods=["POST"])
+def api_thumbsup():
+    # Extract session ID from the request JSON
+    data = request.get_json()
+    session_id = data.get("session_id")
+    try:
+        # Build the endorsement recording URL
+        thumb_url = f"{BASE_URL}/record_endorsement/"
+        # Set parameters to record a thumbs-up
+        params = {"session_id": session_id, "is_expert": False, "thumbs_up": True}
+        # Send POST request with a 10-second timeout
+        resp = requests.post(thumb_url, params=params, timeout=10)
+        resp.raise_for_status()
+        result = resp.text
+    except Exception as e:
+        traceback.print_exc()
+        result = f"Error: {str(e)}"
+    return jsonify({"result": result})
+
+@app.route("/api/thumbsdown", methods=["POST"])
+def api_thumbsdown():
+    # Extract session ID from the request JSON
+    data = request.get_json()
+    session_id = data.get("session_id")
+    try:
+        # Build the endorsement recording URL
+        thumb_url = f"{BASE_URL}/record_endorsement/"
+        # Set parameters to record a thumbs-down
+        params = {"session_id": session_id, "is_expert": False, "thumbs_up": False}
+        # Send POST request with a 10-second timeout
+        resp = requests.post(thumb_url, params=params, timeout=10)
+        resp.raise_for_status()
+        result = resp.text
+    except Exception as e:
+        traceback.print_exc()
+        result = f"Error: {str(e)}"
+    return jsonify({"result": result})
+
+@app.route("/", methods=["GET"])
+def index():
+    # Serve the main HTML page for the chatbot interface
+    return """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RAG Pipeline Chatbot</title>
+  <!-- Load Bootstrap CSS for styling -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Load Montserrat font from Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    /* Define global styles for the page */
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Montserrat', sans-serif;
+      background: linear-gradient(135deg, #f0f4f8, #d9e2ec);
+      color: #334e68;
+    }
+    header.header {
+      background: #1d2d44;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 30px;
+      height: 70px;
+    }
+    nav.nav {
+      display: flex;
+      align-items: center;
+    }
+    nav.nav img.logo-image {
+      height: 60px;
+      width: auto;
+      margin-right: 25px;
+    }
+    nav.nav a {
+      color: #ffffff;
+      margin-right: 25px;
+      text-decoration: none;
+      font-weight: 500;
+      transition: color 0.3s;
+    }
+    nav.nav a:hover {
+      color: #ffc107;
+    }
+    button.request-trial {
+      background: #ffc107;
+      border: none;
+      border-radius: 30px;
+      padding: 10px 25px;
+      font-weight: 700;
+      color: #1d2d44;
+      transition: background 0.3s;
+    }
+    button.request-trial:hover {
+      background: #e0a800;
+    }
+    .main-content {
+      max-width: 1200px;
+      margin: 40px auto;
+      padding: 20px;
+      text-align: center;
+    }
+    section.hero h1 {
+      font-size: 2.5rem;
+      font-weight: 700;
+      margin-bottom: 20px;
+      color: #1d2d44;
+    }
+    section.hero p {
+      font-size: 1.2rem;
+      line-height: 1.6;
+      margin-bottom: 40px;
+      color: #334e68;
+    }
+    #chrome-container {
+      transition: all 0.3s ease-in-out;
+      background: #ffffff;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+      border-radius: 15px;
+      padding: 40px;
+      margin-bottom: 40px;
+    }
+    .chrome-tabs {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      margin-bottom: 30px;
+      flex-wrap: wrap;
+    }
+    .chrome-tab {
+      position: relative;
+      background: #e9ecef;
+      color: #495057;
+      margin: 10px;
+      padding: 10px 20px;
+      border-radius: 30px;
+      border: none;
+      cursor: pointer;
+      transition: background 0.3s, transform 0.2s;
+      font-size: 1rem;
+    }
+    .chrome-tab.active {
+      background: #007bff;
+      color: #fff;
+      transform: translateY(-3px);
+    }
+    .chrome-tab:hover {
+      background: #ced4da;
+    }
+    .chrome-tab .tooltip {
+      visibility: hidden;
+      opacity: 0;
+      width: 280px;
+      background-color: rgba(0, 0, 0, 0.85);
+      color: #fff;
+      text-align: left;
+      border-radius: 8px;
+      padding: 10px;
+      position: absolute;
+      z-index: 1000;
+      bottom: 110%;
+      left: 50%;
+      transform: translateX(-50%);
+      transition: opacity 0.3s;
+      font-size: 0.85rem;
+      box-shadow: 0px 2px 10px rgba(0,0,0,0.3);
+    }
+    .chrome-tab:hover .tooltip {
+      visibility: visible;
+      opacity: 1;
+    }
+    .chrome-tab .tooltip::after {
+      content: "";
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      margin-left: -5px;
+      border-width: 5px;
+      border-style: solid;
+      border-color: rgba(0, 0, 0, 0.85) transparent transparent transparent;
+    }
+    #global-language-container {
+      margin-left: auto;
+      margin-right: 20px;
+      display: flex;
+      align-items: center;
+    }
+    #global-language-container label {
+      margin-left: 10px;
+      margin: 0;
+      font-size: 1rem;
+      color: #495057;
+    }
+    #start-new-chat-button {
+      background: #17a2b8;
+      border: none;
+      border-radius: 30px;
+      padding: 10px 20px;
+      font-weight: 600;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.3s, transform 0.2s;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      display: none;
+      margin-left: 15px;
+    }
+    #start-new-chat-button:hover {
+      background: #0056b3;
+      transform: translateY(-2px);
+    }
+    .grok-container {
+      background: #ffffff;
+      border-radius: 15px;
+      padding: 25px;
+      position: relative;
+      box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+      text-align: left;
+    }
+    .grok-messages {
+      margin-bottom: 10px;
+    }
+    .grok-message {
+      margin: 12px 0;
+      padding: 15px 20px;
+      border-radius: 15px;
+      font-size: 0.95rem;
+      line-height: 1.4;
+      word-wrap: break-word;
+    }
+    .user-message {
+      background: #f1f3f5;
+      text-align: right;
+    }
+    .assistant-message {
+      background: #e9ecef;
+      text-align: left;
+      border-left: 4px solid #17a2b8;
+      color: #343a40;
+    }
+    .system-message {
+      background: #fff3cd;
+      text-align: center;
+      font-style: italic;
+    }
+    /* Styles for the fixed input area at the bottom */
+    #common-input-area {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 85%;
+      display: none;
+      gap: 10px;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+    }
+    #common-input-area input[type="text"] {
+      flex: 1;
+      padding: 15px 20px;
+      border: 2px solid #ced4da;
+      border-radius: 50px;
+      outline: none;
+      font-size: 1rem;
+      transition: border-color 0.3s;
+    }
+    #common-input-area input[type="text"]:focus {
+      border-color: #17a2b8;
+    }
+    #common-input-area button {
+      padding: 15px 25px;
+      background: #17a2b8;
+      color: #fff;
+      border: none;
+      border-radius: 50px;
+      cursor: pointer;
+      font-size: 1rem;
+      transition: background 0.3s;
+    }
+    #common-input-area button:hover {
+      background: #138496;
+    }
+    .loading-text {
+      margin-top: 5px;
+      font-size: 0.9em;
+    }
+    .feedback-container { 
+      text-align: right; 
+      margin-top: 5px; 
+    }
+    .thumb-btn { 
+      background: none; 
+      border: none; 
+      cursor: pointer; 
+      font-size: 1.2em; 
+      margin-left: 5px;
+    }
+    .feedback-popup {
+      position: fixed;
+      bottom: 80px;
+      right: 20px;
+      background: #333;
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 5px;
+      opacity: 0.9;
+      font-size: 0.9em;
+      z-index: 2000;
+    }
+    #doc-links-container {
+      margin: 20px 0;
+      font-size: 1rem;
+      text-align: left;
+    }
+    .checkbox-container {
+      position: relative;
+      display: inline-block;
+      margin-left: 10px;
+    }
+    .checkbox-container .tooltip {
+      visibility: hidden;
+      background-color: rgba(0, 0, 0, 0.8);
+      color: #fff;
+      text-align: center;
+      border-radius: 4px;
+      padding: 5px;
+      position: absolute;
+      bottom: 125%;
+      left: 50%;
+      transform: translateX(-50%);
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out 0.5s;
+      white-space: nowrap;
+      z-index: 1000;
+    }
+    .checkbox-container:hover .tooltip {
+      visibility: visible;
+      opacity: 1;
+    }
+    .checkbox-container input[type="checkbox"] {
+      transform: scale(1.2);
+      vertical-align: middle;
+      margin: 0;
+      cursor: pointer;
+    }
+    #chat-area {
+      display: none; 
+    }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <nav class="nav">
+      <!-- Radiant Logic logo -->
+      <img src="https://raw.githubusercontent.com/Vezingg/rocknbot/main/LilLisa_Server/src/RadiantLogic.png"
+           alt="Radiant Logic Logo"
+           class="logo-image">
+      <a href="https://marketplace.radiantlogic.com/" target="_blank">Marketplace</a>
+      <a href="https://support.radiantlogic.com/hc/en-us" target="_blank">Support</a>
+    </nav>
+    <button class="request-trial"><a href="https://www.radiantlogic.com/request-a-trial/" target="_blank" style="text-decoration: none; color: #1d2d44;">Request Trial</a></button>
+  </header>
+  <div class="main-content">
+    <section class="hero">
+      <h1>Welcome to Radiant Logic Documentation Assistant</h1>
+      <p>
+        Ask your product-related questions below. Answers are drawn from our product documentation and include citations. Provide the product version for version-specific responses.
+      </p>
+    </section>
+    <div id="chrome-container">
+      <div class="chrome-tabs" id="product-tabs">
+        <button class="chrome-tab" id="tab-ida" onclick="selectProduct('IDA')">
+          Identity Analytics
+          <span class="tooltip">
+            <strong>Identity Analytics</strong><br>
+            Respond to audit recommendations and automate controls to ensure compliance.
+          </span>
+        </button>
+        <button class="chrome-tab" id="tab-iddm" onclick="selectProduct('IDDM')">
+          Identity Data Management
+          <span class="tooltip">
+            <strong>Identity Data Management</strong><br>
+            Manage identity data across silos with context-driven views.
+          </span>
+        </button>
+        <button class="chrome-tab" id="tab-eoc" onclick="selectProduct('EOC')">
+          Environment Operations Center
+          <span class="tooltip">
+            <strong>Environment Operations Center</strong><br>
+            Monitor and manage your SaaS applications from a unified control plane.
+          </span>
+        </button>
+        <!-- Language selection checkbox -->
+        <div id="global-language-container">
+          <label>
+            <input type="checkbox" id="global-language-checkbox" onchange="handleGlobalLanguageChange(this)"> French
+          </label>
+        </div>
+        <!-- Button to reset the chat session -->
+        <button id="start-new-chat-button" onclick="newChat(currentProduct)">Start New Chat</button>
+      </div>
+      <div id="chat-area"></div>
+      <div id="common-input-area">
+        <input type="text" id="query-input" placeholder="Type Your Question Here..." autocomplete="off">
+        <button id="send-btn" onclick="sendQuery()">Send Query</button>
+        <div class="checkbox-container" id="start-new-chat-checkbox-container" style="display: inline-block;">
+          <input type="checkbox" id="start-new-chat-checkbox">
+          <span class="tooltip">Start New Chat</span>
+        </div>
+      </div>
+      <div id="doc-links-container"></div>
+    </div>
+  </div>
+  <script>
+    let currentProduct = null;
+    // Track session data for each product
+    const sessions = {
+      "IDA": { sessionId: null, firstQuerySent: false },
+      "IDDM": { sessionId: null, firstQuerySent: false },
+      "EOC": { sessionId: null, firstQuerySent: false }
+    };
+    // HTML templates for chat interfaces
+    const chatTemplates = {
+      "IDA": `<div id="chat-IDA" class="grok-container">
+                <div id="messages-IDA" class="grok-messages"></div>
+              </div>`,
+      "IDDM": `<div id="chat-IDDM" class="grok-container">
+                <div id="messages-IDDM" class="grok-messages"></div>
+              </div>`,
+      "EOC": `<div class="static-info">
+                <p>The Environment Operations Center does not support chatbot functionality yet. Please refer to the documentation below for details.</p>
+              </div>`
+    };
+
+    function ensureChatContainer() {
+      const chatArea = document.getElementById('chat-area');
+      if (!document.getElementById('chat-' + currentProduct)) {
+        chatArea.innerHTML = chatTemplates[currentProduct];
+      }
+      chatArea.style.display = "block";
+    }
+
+    function appendMessage(content, sender) {
+      if (!currentProduct) return;
+      const messagesDiv = document.getElementById('messages-' + currentProduct);
+      if (!messagesDiv) {
+        ensureChatContainer();
+      }
+      const realMessagesDiv = document.getElementById('messages-' + currentProduct);
+      if (!realMessagesDiv) return;
+
+      const msgDiv = document.createElement('div');
+      msgDiv.classList.add('grok-message');
+      if (sender === 'user') {
+        msgDiv.classList.add('user-message');
+        msgDiv.innerText = content;
+      } else if (sender === 'assistant') {
+        msgDiv.classList.add('assistant-message');
+        msgDiv.innerHTML = content;
+        if (!content.startsWith("[Error")) {
+          // Add feedback buttons for assistant messages
+          const feedbackDiv = document.createElement('div');
+          feedbackDiv.classList.add('feedback-container');
+          feedbackDiv.innerHTML = '<button class="thumb-btn up">👍</button>' +
+                                  '<button class="thumb-btn down">👎</button>';
+          msgDiv.appendChild(feedbackDiv);
+          const upBtn = feedbackDiv.querySelector('.thumb-btn.up');
+          const downBtn = feedbackDiv.querySelector('.thumb-btn.down');
+          upBtn.addEventListener('click', function() {
+            if (feedbackDiv.classList.contains("locked")) return;
+            feedbackDiv.classList.add("locked");
+            upBtn.disabled = true;
+            downBtn.disabled = true;
+            submitFeedback('thumbsup');
+          });
+          downBtn.addEventListener('click', function() {
+            if (feedbackDiv.classList.contains("locked")) return;
+            feedbackDiv.classList.add("locked");
+            downBtn.disabled = true;
+            upBtn.disabled = true;
+            submitFeedback('thumbsdown');
+          });
+        }
+      } else {
+        msgDiv.classList.add('system-message');
+        msgDiv.innerText = content;
+      }
+      realMessagesDiv.appendChild(msgDiv);
+      realMessagesDiv.scrollTop = realMessagesDiv.scrollHeight;
+
+      // Show "Start New Chat" options after the first user message
+      if (sender === 'user' && !sessions[currentProduct].firstQuerySent) {
+        sessions[currentProduct].firstQuerySent = true;
+        const startNewChatBtn = document.getElementById('start-new-chat-button');
+        if (startNewChatBtn) {
+          startNewChatBtn.style.display = "inline-block";
+          const globalLangContainer = document.getElementById('global-language-container');
+          if (globalLangContainer) {
+            startNewChatBtn.parentNode.insertBefore(globalLangContainer, startNewChatBtn.nextSibling);
+          }
+        }
+        const newChatCheckboxContainer = document.getElementById('start-new-chat-checkbox-container');
+        if (newChatCheckboxContainer) {
+          newChatCheckboxContainer.style.display = "inline-block";
+        }
+      }
+    }
+
+    function selectProduct(product) {
+      currentProduct = product;
+      // Update tab active state
+      document.querySelectorAll('.chrome-tab').forEach(tab => tab.classList.remove('active'));
+      const clickedTab = document.getElementById('tab-' + product.toLowerCase());
+      if (clickedTab) clickedTab.classList.add('active');
+      const chatArea = document.getElementById('chat-area');
+      const docLinksContainer = document.getElementById('doc-links-container');
+      const inputArea = document.getElementById('common-input-area');
+      const startNewChatBtn = document.getElementById('start-new-chat-button');
+      const newChatCheckboxContainer = document.getElementById('start-new-chat-checkbox-container');
+
+      if (product === "EOC") {
+        // Display static info for EOC (no chatbot)
+        chatArea.innerHTML = chatTemplates["EOC"];
+        chatArea.style.display = "block";
+        docLinksContainer.innerHTML =
+          'See admin documentation <a href="https://developer.radiantlogic.com/eoc/latest/#0" target="_blank">Admin Documentation</a><br>' +
+          'Environment Operations Center provides a unified control plane for managing your RadiantOne SaaS applications.';
+        if (inputArea) inputArea.style.display = "none";
+        if (startNewChatBtn) startNewChatBtn.style.display = "none";
+        if (newChatCheckboxContainer) newChatCheckboxContainer.style.display = "none";
+        return;
+      }
+
+      // Reset chat area and show input for IDA/IDDM
+      chatArea.innerHTML = "";
+      chatArea.style.display = "none";
+      docLinksContainer.innerHTML = "";
+      if (inputArea) inputArea.style.display = "flex";
+      if (startNewChatBtn) startNewChatBtn.style.display = "none";
+      if (newChatCheckboxContainer) newChatCheckboxContainer.style.display = "inline-block";
+      // Populate documentation links based on product
+      if (product === "IDDM") {
+        docLinksContainer.innerHTML =
+          'See admin documentation <a href="https://developer.radiantlogic.com/idm/v8.1/#0" target="_blank">Admin Documentation</a><br>' +
+          'See developer documentation <a href="https://developer.radiantlogic.com/idm/v8.1/#1" target="_blank">Developer Documentation</a><br>' +
+          'Simplify the management of identity data across distributed silos and speed up your identity projects.';
+      } else if (product === "IDA") {
+        docLinksContainer.innerHTML =
+          'See user guide <a href="https://developer.radiantlogic.com/ia/iap-3.2/#0" target="_blank">User Guide</a><br>' +
+          'See developer documentation <a href="https://developer.radiantlogic.com/ia/descartes/#1" target="_blank">Developer Documentation</a><br>' +
+          'Quickly respond to audit recommendations and automate controls for compliant access rights.';
+      }
+    }
+
+    function newChat(product) {
+      // Reset session data and hide chat area
+      sessions[product].sessionId = null;
+      sessions[product].firstQuerySent = false;
+      const chatArea = document.getElementById('chat-area');
+      chatArea.innerHTML = "";
+      chatArea.style.display = "none";
+      const startNewChatBtn = document.getElementById('start-new-chat-button');
+      if (startNewChatBtn) startNewChatBtn.style.display = "none";
+    }
+
+    async function sendQuery() {
+      if (currentProduct === "EOC") return;  // No chatbot for EOC
+      if (!currentProduct) return;
+      const queryInput = document.getElementById('query-input');
+      if (!queryInput || !queryInput.value.trim()) return;
+      // If the New Chat checkbox is checked, trigger a new chat before sending the query
+      const newChatCheckbox = document.getElementById('start-new-chat-checkbox');
+      if(newChatCheckbox && newChatCheckbox.checked) {
+          newChat(currentProduct);
+          newChatCheckbox.checked = false;
+      }
+      const userQuery = queryInput.value.trim();
+      appendMessage(userQuery, 'user');
+      queryInput.value = '';
+      appendLoadingIndicator();
+      // Determine locale based on language checkbox
+      let locale = 'en-US';
+      const langCheckbox = document.getElementById('global-language-checkbox');
+      if (langCheckbox && langCheckbox.checked) locale = 'fr-FR';
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: sessions[currentProduct].sessionId,
+            product: currentProduct,
+            query: userQuery,
+            locale: locale,
+            is_expert: false
+          })
+        });
+        const data = await response.json();
+        removeLoadingIndicator();
+        if (data.session_id) sessions[currentProduct].sessionId = data.session_id;
+        appendMessage(data.answer || "[Error: No answer returned]", 'assistant');
+      } catch (err) {
+        console.error('Error:', err);
+        removeLoadingIndicator();
+        appendMessage("[Error: Failed to get response]", 'assistant');
+      }
+    }
+
+    function appendLoadingIndicator() {
+      if (!currentProduct) return;
+      ensureChatContainer();
+      const messagesDiv = document.getElementById('messages-' + currentProduct);
+      if (!messagesDiv) return;
+      const loader = document.createElement('div');
+      loader.classList.add('grok-message', 'assistant-message');
+      loader.id = 'loading-indicator';
+      loader.innerHTML = `<div class="spinner-border text-secondary spinner-border-sm" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                          </div>
+                          <div class="loading-text">This may take up to a minute.</div>`;
+      messagesDiv.appendChild(loader);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    function removeLoadingIndicator() {
+      const loader = document.getElementById('loading-indicator');
+      if (loader) loader.remove();
+    }
+
+    async function submitFeedback(type) {
+      // Send feedback to the appropriate endpoint
+      try {
+        const response = await fetch('/api/' + type, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessions[currentProduct].sessionId })
+        });
+        await response.json();
+      } catch (err) {
+        console.error('Feedback submission error:', err);
+      }
+      showFeedbackPopup();
+    }
+
+    function showFeedbackPopup() {
+      // Display a temporary feedback confirmation
+      const popup = document.createElement('div');
+      popup.classList.add('feedback-popup');
+      popup.innerText = 'Thank you for your feedback!';
+      document.body.appendChild(popup);
+      setTimeout(() => popup.remove(), 3000);
+    }
+
+    function handleGlobalLanguageChange(checkboxElem) {
+      // Save language preference in a cookie
+      setCookie("languagePreference", checkboxElem.checked ? "fr-FR" : "en-US", 7);
+    }
+
+    function setCookie(name, value, days) {
+      const d = new Date();
+      d.setTime(d.getTime() + (days*24*60*60*1000));
+      let expires = "expires="+ d.toUTCString();
+      document.cookie = name + "=" + value + ";" + expires + ";path=/";
+    }
+
+    function getCookie(name) {
+      let cname = name + "=";
+      let decodedCookie = decodeURIComponent(document.cookie);
+      let ca = decodedCookie.split(';');
+      for(let i = 0; i < ca.length; i++) {
+        let c = ca[i].trim();
+        if (c.indexOf(cname) == 0) {
+          return c.substring(cname.length, c.length);
+        }
+      }
+      return "";
+    }
+
+    window.onload = function() {
+      // Load language preference and set default product
+      const langPref = getCookie("languagePreference");
+      const globalCheckbox = document.getElementById('global-language-checkbox');
+      if (globalCheckbox) globalCheckbox.checked = (langPref === "fr-FR");
+      selectProduct('IDDM');
+      const queryInput = document.getElementById('query-input');
+      if (queryInput) {
+        queryInput.addEventListener('keypress', function(e) {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            sendQuery();
+          }
+        });
+      }
+    };
+  </script>
+</body>
+</html>
+"""
+if __name__ == "__main__":
+    # Start the Flask app on the specified port
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)

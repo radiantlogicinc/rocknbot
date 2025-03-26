@@ -8,6 +8,7 @@ Slack
 
 import asyncio
 import os
+from typing import Optional
 import jwt
 
 import requests
@@ -91,7 +92,7 @@ async def get_ans(query, thread_id, msg_id, product, is_expert_answering):
         )
     except Exception as exc:  # pylint: disable=broad-except
         logger.error(f"An error occurred during the asynchronous call get_ans: {exc}")
-        return "An error occured"
+        return f"Lil lisa Slack-An error occured: {exc}"
 
     conv_dict = {"conv_id": conv_id, "post": response.text, "poster": "Lil-Lisa"}
     logger.info(str(conv_dict))
@@ -190,14 +191,21 @@ async def reaction(event, say):
 
     _, expert_user_id = determine_product_and_expert(channel_id)
 
-    if event["reaction"].startswith("+1") and event["item_user"] == LIL_LISA_SLACK_USERID:
-        user = event["user"]
-        is_expert = user == expert_user_id
+    if event["item_user"] == LIL_LISA_SLACK_USERID:
+        thumbs_up: Optional[bool] = None
+        if event["reaction"].startswith("+1"):
+            thumbs_up = True
+        elif event["reaction"].startswith("-1"):
+            thumbs_up = False
 
-        await record_endorsement(conv_id, is_expert)
-        _ = await say(channel=channel_id, text="Thank you for your feedback!", thread_ts=conv_id)
+        if thumbs_up:
+            user = event["user"]
+            is_expert = user == expert_user_id
 
-    elif event["reaction"].startswith("sos"):
+            await record_endorsement(conv_id, is_expert, thumbs_up)
+            _ = await say(channel=channel_id, text="Thank you for your feedback!", thread_ts=conv_id)
+
+    if event["reaction"].startswith("sos"):
         _ = await say(channel=channel_id, text=f"<@{expert_user_id}> Can you help?", thread_ts=conv_id)
 
 

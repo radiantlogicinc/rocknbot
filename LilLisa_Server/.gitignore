@@ -24,3 +24,6 @@ lancedb/*
 
 # Ignore passwords
 passwords/
+
+vertex-ai-key.json
+test1.py

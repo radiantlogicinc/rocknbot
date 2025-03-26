@@ -93,7 +93,7 @@ class LilLisaServerContext:  # pylint: disable=too-many-instance-attributes, too
         self.conversation_history.append((poster, message))
         self.save_context()
 
-    def record_endorsement(self, is_expert: bool):
+    def record_endorsement(self, is_expert: bool, thumbs_up: bool):
         """Record the endorsement for the response in conversation history"""
         index = len(self.conversation_history) - 1
         if is_expert:
