@@ -8,6 +8,7 @@ from typing import Any, List, Optional
 import lancedb.remote.table  # type: ignore
 import lancedb.rerankers
 import numpy as np
+import pandas as pd
 from llama_index.core.bridge.pydantic import PrivateAttr
 from llama_index.core.schema import (
     BaseNode,
@@ -32,7 +33,6 @@ from llama_index.core.vector_stores.utils import (
     node_to_metadata_dict,
 )
 from llama_index.vector_stores.lancedb.util import sql_operator_mapper
-from pandas import DataFrame
 
 import lancedb
 
@@ -55,14 +55,13 @@ def _to_lance_filter(standard_filters: MetadataFilters, metadata_keys: list) -> 
             filters.append(key + sql_operator_mapper[filter.operator] + f"{filter.value}")
         else:
             filters.append(key + sql_operator_mapper[filter.operator] + f"'{filter.value!s}'")
-
     if standard_filters.condition == FilterCondition.OR:
         return " OR ".join(filters)
     else:
         return " AND ".join(filters)
 
 
-def _to_llama_similarities(results: DataFrame) -> List[float]:
+def _to_llama_similarities(results: pd.DataFrame) -> List[float]:
     keys = results.keys()
     normalized_similarities: np.ndarray
     if "score" in keys:
@@ -79,71 +78,22 @@ class LanceDBVectorStore(BasePydanticVectorStore):
     The LanceDB Vector Store.
 
     Stores text and embeddings in LanceDB. The vector store will open an existing
-        LanceDB dataset or create the dataset if it does not exist.
-
-    Args:
-        uri (str, required): Location where LanceDB will store its files.
-        table_name (str, optional): The table name where the embeddings will be stored.
-            Defaults to "vectors".
-        vector_column_name (str, optional): The vector column name in the table if different from default.
-            Defaults to "vector", in keeping with lancedb convention.
-        nprobes (int, optional): The number of probes used.
-            A higher number makes search more accurate but also slower.
-            Defaults to 20.
-        refine_factor: (int, optional): Refine the results by reading extra elements
-            and re-ranking them in memory.
-            Defaults to None
-        text_key (str, optional): The key in the table that contains the text.
-            Defaults to "text".
-        doc_id_key (str, optional): The key in the table that contains the document id.
-            Defaults to "doc_id".
-        connection (Any, optional): The connection to use for LanceDB.
-            Defaults to None.
-        table (Any, optional): The table to use for LanceDB.
-            Defaults to None.
-        api_key (str, optional): The API key to use LanceDB cloud.
-            Defaults to None. You can also set the `LANCE_API_KEY` environment variable.
-        region (str, optional): The region to use for your LanceDB cloud db.
-            Defaults to None.
-        mode (str, optional): The mode to use for LanceDB.
-            Defaults to "overwrite".
-        query_type (str, optional): The type of query to use for LanceDB.
-            Defaults to "vector".
-        reranker (Any, optional): The reranker to use for LanceDB.
-            Defaults to None.
-        overfetch_factor (int, optional): The factor by which to fetch more results.
-            Defaults to 1.
-
-    Raises:
-        ImportError: Unable to import `lancedb`.
-
-    Returns:
-        LanceDBVectorStore: VectorStore that supports creating LanceDB datasets and
-            querying it.
-
-    Examples:
-        `pip install llama-index-vector-stores-lancedb`
-
-        ```python
-        from llama_index.vector_stores.lancedb import LanceDBVectorStore
-
-        vector_store = LanceDBVectorStore()  # native invocation
-        ```
+    LanceDB dataset or create the dataset if it does not exist.
     """
 
-    stores_text = True
+    stores_text: bool = True
     flat_metadata: bool = True
-    uri: Optional[str]
-    vector_column_name: Optional[str]
-    nprobes: Optional[int]
-    refine_factor: Optional[int]
-    text_key: Optional[str]
-    doc_id_key: Optional[str]
-    api_key: Optional[str]
-    region: Optional[str]
-    mode: Optional[str]
-    query_type: Optional[str]
-    overfetch_factor: Optional[int]
+    uri: Optional[str] = "/tmp/lancedb"
+    vector_column_name: Optional[str] = "vector"
+    nprobes: Optional[int] = 20
+    refine_factor: Optional[int] = None
+    text_key: Optional[str] = DEFAULT_TEXT_KEY
+    doc_id_key: Optional[str] = DEFAULT_DOC_ID_KEY
+    api_key: Optional[str] = None
+    region: Optional[str] = None
+    mode: Optional[str] = "overwrite"
+    query_type: Optional[str] = "hybrid"
+    overfetch_factor: Optional[int] = 1
 
     _table_name: Optional[str] = PrivateAttr()
     _connection: Any = PrivateAttr()
@@ -171,49 +121,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         overfetch_factor: int = 1,
         **kwargs: Any,
     ) -> None:
-        """Init params."""
-        self._table_name = table_name
-        self._metadata_keys = None
-        self._fts_index = None
-
-        if isinstance(reranker, lancedb.rerankers.Reranker):
-            self._reranker = reranker
-        elif reranker is None:
-            self._reranker = None
-        else:
-            raise ValueError("`reranker` has to be a lancedb.rerankers.Reranker object.")
-
-        if isinstance(connection, lancedb.db.LanceDBConnection):
-            self._connection = connection
-        elif isinstance(connection, str):
-            raise ValueError("`connection` has to be a lancedb.db.LanceDBConnection object.")
-        else:
-            if api_key is None and os.getenv("LANCE_API_KEY") is None:
-                if uri.startswith("db://"):
-                    raise ValueError("API key is required for LanceDB cloud.")
-                else:
-                    self._connection = lancedb.connect(uri)
-            else:
-                if "db://" not in uri:
-                    self._connection = lancedb.connect(uri)
-                    warnings.warn("api key provided with local uri. The data will be stored locally")
-                self._connection = lancedb.connect(uri, api_key=api_key or os.getenv("LANCE_API_KEY"), region=region)
-
-        if table is not None:
-            try:
-                assert isinstance(table, (lancedb.db.LanceTable, lancedb.remote.table.RemoteTable))
-                self._table = table
-                self._table_name = table.name if hasattr(table, "name") else "remote_table"
-            except AssertionError:
-                raise ValueError(
-                    "`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object."
-                )
-        else:
-            if self._table_exists():
-                self._table = self._connection.open_table(table_name)
-            else:
-                self._table = None
-
+        # Initialize the Pydantic model.
         super().__init__(
             uri=uri,
             table_name=table_name,
@@ -225,8 +133,51 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             mode=mode,
             query_type=query_type,
             overfetch_factor=overfetch_factor,
+            api_key=api_key,
+            region=region,
             **kwargs,
         )
+
+        # Set private attributes using object.__setattr__
+        object.__setattr__(self, "_table_name", table_name)
+        object.__setattr__(self, "_metadata_keys", None)
+        object.__setattr__(self, "_fts_index", None)
+
+        if isinstance(reranker, lancedb.rerankers.Reranker):
+            object.__setattr__(self, "_reranker", reranker)
+        elif reranker is None:
+            object.__setattr__(self, "_reranker", None)
+        else:
+            raise ValueError("`reranker` has to be a lancedb.rerankers.Reranker object.")
+
+        if isinstance(connection, lancedb.db.LanceDBConnection):
+            object.__setattr__(self, "_connection", connection)
+        elif isinstance(connection, str):
+            raise ValueError("`connection` has to be a lancedb.db.LanceDBConnection object.")
+        else:
+            if api_key is None and os.getenv("LANCE_API_KEY") is None:
+                if uri.startswith("db://"):
+                    raise ValueError("API key is required for LanceDB cloud.")
+                else:
+                    object.__setattr__(self, "_connection", lancedb.connect(uri))
+            else:
+                if "db://" not in uri:
+                    object.__setattr__(self, "_connection", lancedb.connect(uri))
+                    warnings.warn("api key provided with local uri. The data will be stored locally")
+                object.__setattr__(self, "_connection", lancedb.connect(uri, api_key=api_key or os.getenv("LANCE_API_KEY"), region=region))
+
+        if table is not None:
+            try:
+                assert isinstance(table, (lancedb.db.LanceTable, lancedb.remote.table.RemoteTable))
+                object.__setattr__(self, "_table", table)
+                object.__setattr__(self, "_table_name", table.name if hasattr(table, "name") else "remote_table")
+            except AssertionError:
+                raise ValueError("`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object.")
+        else:
+            if self._table_exists():
+                object.__setattr__(self, "_table", self._connection.open_table(table_name))
+            else:
+                object.__setattr__(self, "_table", None)
 
     @property
     def client(self) -> None:
@@ -248,7 +199,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         """Add a reranker to an existing vector store."""
         if reranker is None:
             raise ValueError("`reranker` has to be a lancedb.rerankers.Reranker object.")
-        self._reranker = reranker
+        object.__setattr__(self, "_reranker", reranker)
 
     def _table_exists(self, tbl_name: Optional[str] = None) -> bool:
         return (tbl_name or self._table_name) in self._connection.table_names()
@@ -263,19 +214,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         metric: Optional[str] = "L2",
     ) -> None:
         """
-        Create a scalar(for non-vector cols) or a vector index on a table.
-        Make sure your vector column has enough data before creating an index on it.
-
-        Args:
-            scalar: Create a scalar index on a column. Defaults to False
-            col_name: The column name to create the scalar index on. Defaults to None
-            num_partitions: Number of partitions to use for the index. Defaults to 256
-            num_sub_vectors: Number of sub-vectors to use for the index. Defaults to 96
-            index_cache_size: The size of the index cache. Defaults to None
-            metric: Provide the metric to use for vector index. Defaults to 'L2'
-                    choice of metrics: 'L2', 'dot', 'cosine'
-        Returns:
-            None
+        Create a scalar (for non-vector columns) or a vector index on a table.
         """
         if scalar is None:
             self._table.create_index(
@@ -300,7 +239,6 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             return []
         data = []
         ids = []
-
         for node in nodes:
             metadata = node_to_metadata_dict(node, remove_text=False, flat_metadata=self.flat_metadata)
             if not self._metadata_keys:
@@ -314,7 +252,6 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             }
             data.append(append_data)
             ids.append(node.node_id)
-
         if self._table is None:
             self._table = self._connection.create_table(self._table_name, data, mode=self.mode)
         else:
@@ -322,28 +259,18 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                 self._table.add(data, mode="append")
             else:
                 self._table.add(data)
-
-        self._fts_index = None  # reset fts index
-
+        self._fts_index = None  # reset FTS index
         return ids
 
     def delete(self, ref_doc_id: str, **delete_kwargs: Any) -> None:
         """
-        Delete nodes using with ref_doc_id.
-
-        Args:
-            ref_doc_id (str): The doc_id of the document to delete.
-
+        Delete nodes using the ref_doc_id.
         """
         self._table.delete(f'{self.doc_id_key} = "' + ref_doc_id + '"')
 
     def delete_nodes(self, node_ids: List[str], **delete_kwargs: Any) -> None:
         """
-        Delete nodes using with node_ids.
-
-        Args:
-            node_ids (List[str]): The list of node_ids to delete.
-
+        Delete nodes using a list of node_ids.
         """
         self._table.delete('id in ("' + '","'.join(node_ids) + '")')
 
@@ -358,32 +285,22 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         """
         if isinstance(self._table, lancedb.remote.table.RemoteTable):
             raise ValueError("get_nodes is not supported for LanceDB cloud yet.")
-
         if filters is not None:
             if "where" in kwargs:
-                raise ValueError(
-                    "Cannot specify filter via both query and kwargs. "
-                    "Use kwargs only for lancedb specific items that are "
-                    "not supported via the generic query interface."
-                )
+                raise ValueError("Cannot specify filter via both query and kwargs.")
             where = _to_lance_filter(filters, self._metadata_keys)
         else:
             where = kwargs.pop("where", None)
-
         if node_ids is not None:
             where = 'id in ("' + '","'.join(node_ids) + '")'
-
         results = self._table.search().where(where).to_pandas()
-
         nodes = []
-
         for _, item in results.iterrows():
             try:
                 node = metadata_dict_to_node(item.metadata)
                 node.embedding = list(item[self.vector_column_name])
             except Exception:
-                # deprecated legacy logic for backward compatibility
-                _logger.debug("Failed to parse Node metadata, fallback to legacy logic.")
+                _logger.debug("Failed to parse Node metadata, falling back to legacy logic.")
                 if item.metadata:
                     metadata, node_info, _relation = legacy_metadata_dict_to_node(
                         item.metadata, text_key=self.text_key
@@ -400,9 +317,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                         NodeRelationship.SOURCE: RelatedNodeInfo(node_id=item[self.doc_id_key]),
                     },
                 )
-
             nodes.append(node)
-
         return nodes
 
     def query(
@@ -413,70 +328,72 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         """Query index for top k most similar nodes."""
         if query.filters is not None:
             if "where" in kwargs:
-                raise ValueError(
-                    "Cannot specify filter via both query and kwargs. "
-                    "Use kwargs only for lancedb specific items that are "
-                    "not supported via the generic query interface."
-                )
+                raise ValueError("Cannot specify filter via both query and kwargs.")
             where = _to_lance_filter(query.filters, self._metadata_keys)
         else:
             where = kwargs.pop("where", None)
 
         query_type = kwargs.pop("query_type", self.query_type)
+        _logger.info(f"query_type: {query_type}")
 
-        _logger.info(f"query_type :, {query_type}")
-
+        # Handle different query types separately.
         if query_type == "vector":
             _query = query.query_embedding
-        else:
+            lance_query = self._table.search(query=_query, vector_column_name=self.vector_column_name)
+            if hasattr(lance_query, "metric"):
+                lance_query = lance_query.metric("cosine")
+            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
+            if hasattr(lance_query, "nprobes"):
+                lance_query.nprobes(self.nprobes)
+            results = lance_query.to_pandas()
+
+        elif query_type == "fts":
+            _query = query.query_str
+            lance_query = self._table.search(query=_query, vector_column_name=self.vector_column_name)
+            if hasattr(lance_query, "metric"):
+                lance_query = lance_query.metric("cosine")
+            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
+            results = lance_query.to_pandas()
+
+        elif query_type == "hybrid":
+            # Create FTS index if not already created.
             if not isinstance(self._table, lancedb.db.LanceTable):
-                raise ValueError(
-                    "creating FTS index is not supported for LanceDB Cloud yet. "
-                    "Please use a local table for FTS/Hybrid search."
-                )
+                raise ValueError("FTS index creation not supported for LanceDB Cloud.")
             if self._fts_index is None:
                 self._fts_index = self._table.create_fts_index(self.text_key, replace=True)
 
-            if query_type == "hybrid":
-                _query = (query.query_embedding, query.query_str)
-            elif query_type == "fts":
-                _query = query.query_str
-            else:
-                raise ValueError(f"Invalid query type: {query_type}")
+            # Execute vector search.
+            vector_query = self._table.search(query=query.query_embedding, vector_column_name=self.vector_column_name)
+            if hasattr(vector_query, "metric"):
+                vector_query = vector_query.metric("cosine")
+            vector_query = vector_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
+            if hasattr(vector_query, "nprobes"):
+                vector_query.nprobes(self.nprobes)
+            vector_results = vector_query.to_pandas()
 
-        lance_query = (
-            self._table.search(
-                query=_query,
-                vector_column_name=self.vector_column_name,
-            )
-            .metric("cosine")
-            .limit(query.similarity_top_k * self.overfetch_factor)
-            .where(where, prefilter=True)
-        )
+            # Execute full-text search.
+            fts_query = self._table.search(query=query.query_str, vector_column_name=self.vector_column_name)
+            fts_query = fts_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
+            fts_results = fts_query.to_pandas()
 
-        if query_type != "fts":
-            lance_query.nprobes(self.nprobes)
-            if query_type == "hybrid" and self._reranker is not None:
-                _logger.info(f"using {self._reranker} for reranking results.")
-                lance_query.rerank(reranker=self._reranker)
+            # Combine the results using pd.concat and drop duplicate IDs.
+            combined_results = pd.concat([vector_results, fts_results], ignore_index=True)
+            combined_results = combined_results.drop_duplicates(subset="id")
+            results = combined_results
 
-        if self.refine_factor is not None:
-            lance_query.refine_factor(self.refine_factor)
-
-        results = lance_query.to_pandas()
+        else:
+            raise ValueError(f"Invalid query type: {query_type}")
 
         if len(results) == 0:
-            raise Warning("query results are empty..")
+            raise Warning("Query results are empty.")
 
         nodes = []
-
         for _, item in results.iterrows():
             try:
                 node = metadata_dict_to_node(item.metadata)
                 node.embedding = list(item[self.vector_column_name])
             except Exception:
-                # deprecated legacy logic for backward compatibility
-                _logger.debug("Failed to parse Node metadata, fallback to legacy logic.")
+                _logger.debug("Failed to parse Node metadata, falling back to legacy logic.")
                 if item.metadata:
                     metadata, node_info, _relation = legacy_metadata_dict_to_node(
                         item.metadata, text_key=self.text_key
@@ -493,7 +410,6 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                         NodeRelationship.SOURCE: RelatedNodeInfo(node_id=item[self.doc_id_key]),
                     },
                 )
-
             nodes.append(node)
 
         return VectorStoreQueryResult(
