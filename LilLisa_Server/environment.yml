@@ -25,4 +25,4 @@ dependencies:
     - speedict==0.3.12
     - tiktoken==0.7.0
     - uvicorn==0.20.0
-    - litellm 1.63.14
+    - litellm==1.63.14
