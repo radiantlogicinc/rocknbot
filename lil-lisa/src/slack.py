@@ -202,7 +202,7 @@ async def reaction(event, say):
             user = event["user"]
             is_expert = user == expert_user_id
 
-            await record_endorsement(conv_id, thumbs_up, is_expert)
+            await record_endorsement(conv_id, is_expert, thumbs_up)
             _ = await say(channel=channel_id, text="Thank you for your feedback!", thread_ts=conv_id)
 
     if event["reaction"].startswith("sos"):

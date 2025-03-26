@@ -1,22 +1,28 @@
-# Dockerfile_cloud
 FROM continuumio/miniconda3:latest
 
+# Update conda
+RUN conda update conda && conda update --all
+
+# Set the working directory
 WORKDIR /app
 
-COPY environment.yml /app/
+# Copy the new environment file from the build directory into /app
+# (The build context is the project root, so "build/environment.yml" is the correct path.)
+COPY build/environment.yml /app/
+
+# Create the conda environment using the new environment file (which now includes gunicorn)
 RUN conda env create -f environment.yml
 
-COPY main.py .  
-COPY lil-lisa-web.env .
+# Copy application code and environment variable file from the root directory
+COPY main.py /app/
+COPY lil-lisa-web.env /app/
 
-RUN pip install --no-cache-dir flask requests
+# Ensure logs are unbuffered (important for production logging)
+ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8000
+# Expose the port so cloud platforms can route traffic
+EXPOSE 8080
 
-# Set default environment variables for cloud deployment
-ENV APP_NAMESPACE=lil-lisa-web
-ENV CLOUD_PORT=8000
-ENV DEPLOYMENT_MODE=cloud
-
-
-CMD ["conda", "run", "-n", "lil-lisa-web", "python", "main.py"]
+# Use gunicorn as the production server.
+# "main:app" tells gunicorn to import the Flask app object (named "app") from main.py.
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa-web", "gunicorn", "-b", "0.0.0.0:8080", "main:app"]

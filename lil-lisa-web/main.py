@@ -5,13 +5,32 @@ import json
 import traceback
 import requests
 from flask import Flask, request, jsonify
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
+import logging
+
 
 # Load environment variables from the specified .env file
 load_dotenv('lil-lisa-web.env')
 
+lil_lisa_env = dotenv_values('lil-lisa-web.env')
+
+
 # Set the base URL for API requests, defaulting to localhost if not specified
-BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+BASE_URL = os.getenv("LIL_LISA_SERVER_URL", lil_lisa_env.get("LIL_LISA_SERVER_URL"))
+
+if not BASE_URL:
+    raise ValueError("LIL_LISA_SERVER_URL environment variable is not set")
+else:
+    BASE_URL = BASE_URL.rstrip('/')  # Remove trailing slash to avoid endpoint issues
+    logger.info(f"Using LIL_LISA_SERVER_URL: {BASE_URL}")
 
 # Initialize the Flask application
 app = Flask(__name__)
