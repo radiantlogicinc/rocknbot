@@ -61,7 +61,7 @@ DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS = None  # List of Identity Analytics d
 DOCUMENTATION_IA_PRODUCT_VERSIONS = None  # List of IA product documentation versions
 DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None  # List of IA self-managed documentation versions
 MAX_ITERATIONS = None  # Maximum number of iterations for the ReAct agent
-LLM_MODEL =None   # Model name
+LLM_MODEL = None   # Model name
 
 # -----------------------------------------------------------------------------
 # Custom LLM Implementation
