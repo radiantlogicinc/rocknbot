@@ -1,22 +1,21 @@
+from flask import Flask, request, jsonify, Response
 import os
 import re
 import uuid
 import json
 import traceback
 import requests
-from flask import Flask, request, jsonify
 from dotenv import load_dotenv, dotenv_values
 import logging
-
+import time
+from html import escape
 
 # Load environment variables from the specified .env file
 load_dotenv('lil-lisa-web.env')
 
 lil_lisa_env = dotenv_values('lil-lisa-web.env')
 
-
-# Set the base URL for API requests, defaulting to localhost if not specified
-
+# Set up logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
@@ -24,6 +23,7 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
+# Set the base URL for API requests, defaulting to localhost if not specified
 BASE_URL = os.getenv("LIL_LISA_SERVER_URL", lil_lisa_env.get("LIL_LISA_SERVER_URL"))
 
 if not BASE_URL:
@@ -35,46 +35,85 @@ else:
 # Initialize the Flask application
 app = Flask(__name__)
 
+# Function to generate a unique session ID
 def generate_unique_session_id() -> str:
-    # Generate a unique session ID using UUID version 4
+    """Generate a unique session ID using UUID version 4."""
     return str(uuid.uuid4())
 
+# Function to apply formatting to individual lines (for bold text and links)
+def apply_formatting(text):
+    """Apply formatting to convert markdown-like syntax to HTML while preserving text after ':'."""
+    text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'\$\$\s*(.+?)\s*\$\$\s*\$\$\s*(https?://\S+)\s*\$\$', r'<a href="\2">\1</a>', text)
+    text = re.sub(r'(https?://\S+)', r'<a href="\1">\1</a>', text)
+    return text
+
+# Function to format LLM responses into HTML without special code block styling.
 def format_response(response: str) -> str:
     """
-    Convert LLM text to HTML by transforming markdown-like lists, bold text, and links.
+    Convert LLM text to HTML by transforming markdown-like lists, bold text, links, and headings.
+    Any occurrence of triple backticks (```) is removed. If a line becomes empty after removal,
+    it is skipped. This way, text originally inside the backticks is displayed normally.
     """
-    # Split response into lines for individual processing
     lines = response.split("\n")
     formatted = ""
     in_list = False
     for line in lines:
-        stripped = line.strip()
-        # Identify and format list items starting with '-' or '*'
-        if stripped.startswith("-") or stripped.startswith("*"):
+        # Remove all triple backticks if present
+        if "```" in line:
+            line = line.replace("```", "")
+            if not line.strip():
+                continue  # Skip line if nothing remains
+        if "**" in line:
+            line = line.replace("**", "")
+            if not line.strip():
+                continue
+        if "###" in line:
+            line = line.replace("###" , "")
+            if not line.strip():
+                continue
+        if line.strip().startswith("###"):
+            heading = line.strip()[3:].strip()
+            formatted += f"<h3>{heading}</h3>"
+        elif line.strip().startswith("-") or line.strip().startswith("*"):
             if not in_list:
                 formatted += "<ul>"
                 in_list = True
-            formatted += "<li>" + stripped[2:].strip() + "</li>"
+            item = line.strip()[1:].strip()
+            formatted_item = apply_formatting(item)
+            formatted += f"<li>{formatted_item}</li>"
         else:
             if in_list:
                 formatted += "</ul>"
                 in_list = False
-            # Append non-list lines with a line break
-            formatted += line + "<br>"
+            formatted_line = apply_formatting(line)
+            formatted += formatted_line + "<br>"
     if in_list:
         formatted += "</ul>"
-    # Transform bold markdown (**text**) to HTML <strong> tags
-    formatted = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', formatted)
-    # Convert various link formats to HTML <a> tags
-    formatted = re.sub(r'\(([^)]+)\) \((https?://\S+)\)', r'<a href="\2">\1</a>', formatted)  # (text) (url)
-    formatted = re.sub(r'\[([^\]]+)\]\((https?://\S+)\)', r'<a href="\2">\1</a>', formatted)  # [text](url)
-    formatted = re.sub(r'([^\(]+) \((https?://\S+)\)', r'<a href="\2">\1</a>', formatted)    # text (url)
-    formatted = re.sub(r'(https?://\S+)', r'<a href="\1">\1</a>', formatted)                # bare URLs
     return formatted
+
+# Generator to stream text with a typing delay.
+def stream_with_delay(text, char_delay=0.005):
+    """
+    Generator that yields HTML tags immediately and text characters with a delay.
+    """
+    i = 0
+    while i < len(text):
+        if text[i] == "<":
+            j = text.find(">", i)
+            if j == -1:
+                j = len(text) - 1
+            tag = text[i:j+1]
+            yield tag
+            i = j + 1
+        else:
+            yield text[i]
+            time.sleep(char_delay)
+            i += 1
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
-    # Extract JSON data from the incoming request
+    """Handle non-streaming chat requests."""
     data = request.get_json()
     session_id = data.get("session_id")
     product = data.get("product")
@@ -82,14 +121,11 @@ def api_chat():
     locale = data.get("locale", "en-US")
     is_expert = data.get("is_expert", False)
     
-    # Generate a new session ID if none is provided
     if not session_id:
         session_id = generate_unique_session_id()
 
     try:
-        # Construct the API endpoint URL dynamically
         invoke_url = f"{BASE_URL}/invoke/"
-        # Define parameters for the backend API request
         params = {
             "session_id": session_id,
             "locale": locale,
@@ -97,31 +133,111 @@ def api_chat():
             "nl_query": nl_query,
             "is_expert_answering": is_expert
         }
-        # Send POST request to the backend API with a 60-second timeout
         resp = requests.post(invoke_url, params=params, timeout=60)
         resp.raise_for_status()
-        # Format the API response into HTML
         formatted_answer = format_response(resp.text)
     except Exception as e:
-        # Log the exception stack trace for debugging
         traceback.print_exc()
-        # Return an error message if the request fails
         formatted_answer = f"Internal error: {str(e)}"
 
-    # Return the formatted response and session ID as JSON
     return jsonify({"answer": formatted_answer, "session_id": session_id})
+
+@app.route("/api/stream_chat", methods=["POST"])
+def api_stream_chat():
+    """Handle streaming chat requests with persistent session ID and typing delay."""
+    data = request.get_json()
+    session_id = data.get("session_id")
+    product = data.get("product")
+    nl_query = data.get("query")
+    locale = data.get("locale", "en-US")
+    is_expert = data.get("is_expert", False)
+
+    if not session_id:
+        session_id = generate_unique_session_id()
+        
+    try:
+        stream_url = f"{BASE_URL}/invoke_stream/"
+        params = {
+            "session_id": session_id,
+            "locale": locale,
+            "product": product,
+            "nl_query": nl_query,
+            "is_expert_answering": is_expert
+        }
+        r = requests.post(stream_url, params=params, stream=True, timeout=60)
+        r.raise_for_status()
+
+        def generate():
+            in_list = False
+            buffer = ""
+            for chunk in r.iter_content(chunk_size=128):
+                if chunk:
+                    buffer += chunk.decode("utf-8")
+                    lines = buffer.split("\n")
+                    for line in lines[:-1]:
+                        # Remove triple backticks if present in the line
+                        if "```" in line:
+                            line = line.replace("```", "")
+                            if not line.strip():
+                                continue
+                        if line.strip() == "--" or "answer_from_document_retrieval_tool" in line:
+                            continue
+                        if line.strip().startswith("###"):
+                            heading = line.strip()[3:].strip()
+                            yield from stream_with_delay(f"<h3>{heading}</h3>")
+                        elif line.strip().startswith("-") or line.strip().startswith("*"):
+                            if not in_list:
+                                yield from stream_with_delay("<ul>")
+                                in_list = True
+                            item = line.strip()[1:].strip()
+                            formatted_item = apply_formatting(item)
+                            yield from stream_with_delay("<li>")
+                            yield from stream_with_delay(formatted_item)
+                            yield from stream_with_delay("</li>")
+                        else:
+                            if in_list:
+                                yield from stream_with_delay("</ul>")
+                                in_list = False
+                            formatted_line = apply_formatting(line)
+                            yield from stream_with_delay(formatted_line)
+                            yield from stream_with_delay("<br>")
+                    buffer = lines[-1]
+            if buffer:
+                if "```" in buffer:
+                    buffer = buffer.replace("```", "")
+                if buffer.strip().startswith("###"):
+                    heading = buffer.strip()[3:].strip()
+                    yield from stream_with_delay(f"<h3>{heading}</h3>")
+                elif buffer.strip().startswith("-") or buffer.strip().startswith("*"):
+                    if not in_list:
+                        yield from stream_with_delay("<ul>")
+                    item = buffer.strip()[1:].strip()
+                    formatted_item = apply_formatting(item)
+                    yield from stream_with_delay("<li>")
+                    yield from stream_with_delay(formatted_item)
+                    yield from stream_with_delay("</li>")
+                    yield from stream_with_delay("</ul>")
+                else:
+                    if in_list:
+                        yield from stream_with_delay("</ul>")
+                    yield from stream_with_delay(apply_formatting(buffer))
+                    yield from stream_with_delay("<br>")
+
+        response = Response(generate(), mimetype="text/html")
+        response.headers['X-Session-ID'] = session_id
+        return response
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e), "session_id": session_id})
 
 @app.route("/api/thumbsup", methods=["POST"])
 def api_thumbsup():
-    # Extract session ID from the request JSON
+    """Record a thumbs-up endorsement for a session."""
     data = request.get_json()
     session_id = data.get("session_id")
     try:
-        # Build the endorsement recording URL
         thumb_url = f"{BASE_URL}/record_endorsement/"
-        # Set parameters to record a thumbs-up
         params = {"session_id": session_id, "is_expert": False, "thumbs_up": True}
-        # Send POST request with a 10-second timeout
         resp = requests.post(thumb_url, params=params, timeout=10)
         resp.raise_for_status()
         result = resp.text
@@ -132,15 +248,12 @@ def api_thumbsup():
 
 @app.route("/api/thumbsdown", methods=["POST"])
 def api_thumbsdown():
-    # Extract session ID from the request JSON
+    """Record a thumbs-down endorsement for a session."""
     data = request.get_json()
     session_id = data.get("session_id")
     try:
-        # Build the endorsement recording URL
         thumb_url = f"{BASE_URL}/record_endorsement/"
-        # Set parameters to record a thumbs-down
         params = {"session_id": session_id, "is_expert": False, "thumbs_up": False}
-        # Send POST request with a 10-second timeout
         resp = requests.post(thumb_url, params=params, timeout=10)
         resp.raise_for_status()
         result = resp.text
@@ -151,7 +264,7 @@ def api_thumbsdown():
 
 @app.route("/", methods=["GET"])
 def index():
-    # Serve the main HTML page for the chatbot interface
+    """Serve the main chatbot interface."""
     return """
 <!DOCTYPE html>
 <html lang="en">
@@ -159,12 +272,9 @@ def index():
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>RAG Pipeline Chatbot</title>
-  <!-- Load Bootstrap CSS for styling -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <!-- Load Montserrat font from Google Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
   <style>
-    /* Define global styles for the page */
     body {
       margin: 0;
       padding: 0;
@@ -361,7 +471,6 @@ def index():
       text-align: center;
       font-style: italic;
     }
-    /* Styles for the fixed input area at the bottom */
     #common-input-area {
       position: fixed;
       bottom: 20px;
@@ -465,12 +574,18 @@ def index():
     #chat-area {
       display: none; 
     }
+    pre {
+      background-color: #f4f4f4;
+      padding: 10px;
+      border-radius: 5px;
+      font-family: monospace;
+      white-space: pre-wrap;
+    }
   </style>
 </head>
 <body>
   <header class="header">
     <nav class="nav">
-      <!-- Radiant Logic logo -->
       <img src="https://raw.githubusercontent.com/Vezingg/rocknbot/main/LilLisa_Server/src/RadiantLogic.png"
            alt="Radiant Logic Logo"
            class="logo-image">
@@ -509,13 +624,11 @@ def index():
             Monitor and manage your SaaS applications from a unified control plane.
           </span>
         </button>
-        <!-- Language selection checkbox -->
         <div id="global-language-container">
           <label>
             <input type="checkbox" id="global-language-checkbox" onchange="handleGlobalLanguageChange(this)"> French
           </label>
         </div>
-        <!-- Button to reset the chat session -->
         <button id="start-new-chat-button" onclick="newChat(currentProduct)">Start New Chat</button>
       </div>
       <div id="chat-area"></div>
@@ -527,29 +640,31 @@ def index():
           <span class="tooltip">Start New Chat</span>
         </div>
       </div>
+      <button id="scroll-to-bottom-btn" style="display: none; position: fixed; bottom: 80px; right: 20px; z-index: 1000; background: #17a2b8; color: #fff; border: none; border-radius: 50%; width: 40px; height: 40px; font-size: 20px; cursor: pointer;">⬇️</button>
       <div id="doc-links-container"></div>
     </div>
   </div>
   <script>
     let currentProduct = null;
-    // Track session data for each product
     const sessions = {
       "IDA": { sessionId: null, firstQuerySent: false },
       "IDDM": { sessionId: null, firstQuerySent: false },
       "EOC": { sessionId: null, firstQuerySent: false }
     };
-    // HTML templates for chat interfaces
     const chatTemplates = {
       "IDA": `<div id="chat-IDA" class="grok-container">
                 <div id="messages-IDA" class="grok-messages"></div>
+                <div class="scroll-padding" style="height: 100px;"></div>
               </div>`,
       "IDDM": `<div id="chat-IDDM" class="grok-container">
                 <div id="messages-IDDM" class="grok-messages"></div>
+                <div class="scroll-padding" style="height: 100px;"></div>
               </div>`,
       "EOC": `<div class="static-info">
                 <p>The Environment Operations Center does not support chatbot functionality yet. Please refer to the documentation below for details.</p>
               </div>`
     };
+    let autoScrollEnabled = true;
 
     function ensureChatContainer() {
       const chatArea = document.getElementById('chat-area');
@@ -577,7 +692,6 @@ def index():
         msgDiv.classList.add('assistant-message');
         msgDiv.innerHTML = content;
         if (!content.startsWith("[Error")) {
-          // Add feedback buttons for assistant messages
           const feedbackDiv = document.createElement('div');
           feedbackDiv.classList.add('feedback-container');
           feedbackDiv.innerHTML = '<button class="thumb-btn up">👍</button>' +
@@ -605,29 +719,13 @@ def index():
         msgDiv.innerText = content;
       }
       realMessagesDiv.appendChild(msgDiv);
-      realMessagesDiv.scrollTop = realMessagesDiv.scrollHeight;
-
-      // Show "Start New Chat" options after the first user message
-      if (sender === 'user' && !sessions[currentProduct].firstQuerySent) {
-        sessions[currentProduct].firstQuerySent = true;
-        const startNewChatBtn = document.getElementById('start-new-chat-button');
-        if (startNewChatBtn) {
-          startNewChatBtn.style.display = "inline-block";
-          const globalLangContainer = document.getElementById('global-language-container');
-          if (globalLangContainer) {
-            startNewChatBtn.parentNode.insertBefore(globalLangContainer, startNewChatBtn.nextSibling);
-          }
-        }
-        const newChatCheckboxContainer = document.getElementById('start-new-chat-checkbox-container');
-        if (newChatCheckboxContainer) {
-          newChatCheckboxContainer.style.display = "inline-block";
-        }
+      if (autoScrollEnabled) {
+        window.scrollTo(0, document.body.scrollHeight);
       }
     }
 
     function selectProduct(product) {
       currentProduct = product;
-      // Update tab active state
       document.querySelectorAll('.chrome-tab').forEach(tab => tab.classList.remove('active'));
       const clickedTab = document.getElementById('tab-' + product.toLowerCase());
       if (clickedTab) clickedTab.classList.add('active');
@@ -638,7 +736,6 @@ def index():
       const newChatCheckboxContainer = document.getElementById('start-new-chat-checkbox-container');
 
       if (product === "EOC") {
-        // Display static info for EOC (no chatbot)
         chatArea.innerHTML = chatTemplates["EOC"];
         chatArea.style.display = "block";
         docLinksContainer.innerHTML =
@@ -647,17 +744,16 @@ def index():
         if (inputArea) inputArea.style.display = "none";
         if (startNewChatBtn) startNewChatBtn.style.display = "none";
         if (newChatCheckboxContainer) newChatCheckboxContainer.style.display = "none";
+        document.getElementById('scroll-to-bottom-btn').style.display = 'none';
         return;
       }
 
-      // Reset chat area and show input for IDA/IDDM
       chatArea.innerHTML = "";
       chatArea.style.display = "none";
       docLinksContainer.innerHTML = "";
       if (inputArea) inputArea.style.display = "flex";
       if (startNewChatBtn) startNewChatBtn.style.display = "none";
       if (newChatCheckboxContainer) newChatCheckboxContainer.style.display = "inline-block";
-      // Populate documentation links based on product
       if (product === "IDDM") {
         docLinksContainer.innerHTML =
           'See admin documentation <a href="https://developer.radiantlogic.com/idm/v8.1/#0" target="_blank">Admin Documentation</a><br>' +
@@ -669,10 +765,10 @@ def index():
           'See developer documentation <a href="https://developer.radiantlogic.com/ia/descartes/#1" target="_blank">Developer Documentation</a><br>' +
           'Quickly respond to audit recommendations and automate controls for compliant access rights.';
       }
+      document.getElementById('scroll-to-bottom-btn').style.display = 'none';
     }
 
     function newChat(product) {
-      // Reset session data and hide chat area
       sessions[product].sessionId = null;
       sessions[product].firstQuerySent = false;
       const chatArea = document.getElementById('chat-area');
@@ -680,73 +776,107 @@ def index():
       chatArea.style.display = "none";
       const startNewChatBtn = document.getElementById('start-new-chat-button');
       if (startNewChatBtn) startNewChatBtn.style.display = "none";
+      document.getElementById('scroll-to-bottom-btn').style.display = 'none';
     }
 
     async function sendQuery() {
-      if (currentProduct === "EOC") return;  // No chatbot for EOC
       if (!currentProduct) return;
       const queryInput = document.getElementById('query-input');
       if (!queryInput || !queryInput.value.trim()) return;
-      // If the New Chat checkbox is checked, trigger a new chat before sending the query
+      
+      autoScrollEnabled = true;
+      
       const newChatCheckbox = document.getElementById('start-new-chat-checkbox');
-      if(newChatCheckbox && newChatCheckbox.checked) {
+      if (newChatCheckbox && newChatCheckbox.checked) {
           newChat(currentProduct);
           newChatCheckbox.checked = false;
       }
       const userQuery = queryInput.value.trim();
       appendMessage(userQuery, 'user');
       queryInput.value = '';
-      appendLoadingIndicator();
-      // Determine locale based on language checkbox
+
+      appendMessage("", 'assistant');
+      const messagesDiv = document.getElementById('messages-' + currentProduct);
+      const assistantMsgDiv = messagesDiv.lastChild;
+      
       let locale = 'en-US';
       const langCheckbox = document.getElementById('global-language-checkbox');
       if (langCheckbox && langCheckbox.checked) locale = 'fr-FR';
+      
+      document.getElementById('scroll-to-bottom-btn').style.display = 'block';
+      
       try {
-        const response = await fetch('/api/chat', {
+        const response = await fetch('/api/stream_chat', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
-            session_id: sessions[currentProduct].sessionId,
-            product: currentProduct,
-            query: userQuery,
-            locale: locale,
-            is_expert: false
+             session_id: sessions[currentProduct].sessionId,
+             product: currentProduct,
+             query: userQuery,
+             locale: locale,
+             is_expert: false
           })
         });
-        const data = await response.json();
-        removeLoadingIndicator();
-        if (data.session_id) sessions[currentProduct].sessionId = data.session_id;
-        appendMessage(data.answer || "[Error: No answer returned]", 'assistant');
+        
+        const sessionId = response.headers.get('X-Session-ID');
+        if (sessionId) {
+            sessions[currentProduct].sessionId = sessionId;
+        }
+        if (!sessions[currentProduct].firstQuerySent) {
+          sessions[currentProduct].firstQuerySent = true;
+          document.getElementById('start-new-chat-button').style.display = 'inline-block';
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let assistantResponse = "";
+        
+        function readStream() {
+          reader.read().then(({done, value}) => {
+              if (done) {
+                  if (!assistantResponse.startsWith("[Error")) {
+                      const feedbackDiv = document.createElement('div');
+                      feedbackDiv.classList.add('feedback-container');
+                      feedbackDiv.innerHTML = '<button class="thumb-btn up">👍</button>' +
+                                              '<button class="thumb-btn down">👎</button>';
+                      assistantMsgDiv.appendChild(feedbackDiv);
+                      const upBtn = feedbackDiv.querySelector('.thumb-btn.up');
+                      const downBtn = feedbackDiv.querySelector('.thumb-btn.down');
+                      upBtn.addEventListener('click', function() {
+                          if (feedbackDiv.classList.contains("locked")) return;
+                          feedbackDiv.classList.add("locked");
+                          upBtn.disabled = true;
+                          downBtn.disabled = true;
+                          submitFeedback('thumbsup');
+                      });
+                      downBtn.addEventListener('click', function() {
+                          if (feedbackDiv.classList.contains("locked")) return;
+                          feedbackDiv.classList.add("locked");
+                          downBtn.disabled = true;
+                          upBtn.disabled = true;
+                          submitFeedback('thumbsdown');
+                      });
+                  }
+                  document.getElementById('scroll-to-bottom-btn').style.display = 'none';
+                  return;
+              }
+              const chunk = decoder.decode(value, {stream: true});
+              assistantResponse += chunk;
+              assistantMsgDiv.innerHTML = assistantResponse;
+              if (autoScrollEnabled) {
+                window.scrollTo(0, document.body.scrollHeight);
+              }
+              readStream();
+          }).catch(error => console.error("Error reading stream", error));
+        }
+        readStream();
       } catch (err) {
-        console.error('Error:', err);
-        removeLoadingIndicator();
-        appendMessage("[Error: Failed to get response]", 'assistant');
+          console.error("Error:", err);
+          appendMessage("[Error: Failed to get response]", "assistant");
+          document.getElementById('scroll-to-bottom-btn').style.display = 'none';
       }
     }
 
-    function appendLoadingIndicator() {
-      if (!currentProduct) return;
-      ensureChatContainer();
-      const messagesDiv = document.getElementById('messages-' + currentProduct);
-      if (!messagesDiv) return;
-      const loader = document.createElement('div');
-      loader.classList.add('grok-message', 'assistant-message');
-      loader.id = 'loading-indicator';
-      loader.innerHTML = `<div class="spinner-border text-secondary spinner-border-sm" role="status">
-                            <span class="visually-hidden">Loading...</span>
-                          </div>
-                          <div class="loading-text">This may take up to a minute.</div>`;
-      messagesDiv.appendChild(loader);
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
-
-    function removeLoadingIndicator() {
-      const loader = document.getElementById('loading-indicator');
-      if (loader) loader.remove();
-    }
-
     async function submitFeedback(type) {
-      // Send feedback to the appropriate endpoint
       try {
         const response = await fetch('/api/' + type, {
           method: 'POST',
@@ -761,7 +891,6 @@ def index():
     }
 
     function showFeedbackPopup() {
-      // Display a temporary feedback confirmation
       const popup = document.createElement('div');
       popup.classList.add('feedback-popup');
       popup.innerText = 'Thank you for your feedback!';
@@ -770,7 +899,6 @@ def index():
     }
 
     function handleGlobalLanguageChange(checkboxElem) {
-      // Save language preference in a cookie
       setCookie("languagePreference", checkboxElem.checked ? "fr-FR" : "en-US", 7);
     }
 
@@ -794,8 +922,13 @@ def index():
       return "";
     }
 
+    window.addEventListener('scroll', function() {
+      if ((window.innerHeight + window.scrollY) < document.body.scrollHeight - 10) {
+        autoScrollEnabled = false;
+      }
+    });
+
     window.onload = function() {
-      // Load language preference and set default product
       const langPref = getCookie("languagePreference");
       const globalCheckbox = document.getElementById('global-language-checkbox');
       if (globalCheckbox) globalCheckbox.checked = (langPref === "fr-FR");
@@ -809,12 +942,16 @@ def index():
           }
         });
       }
+      document.getElementById('scroll-to-bottom-btn').addEventListener('click', function() {
+        window.scrollTo(0, document.body.scrollHeight);
+      });
     };
   </script>
 </body>
 </html>
 """
+
+# Run the Flask app
 if __name__ == "__main__":
-    # Start the Flask app on the specified port
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
