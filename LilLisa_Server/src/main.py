@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Optional, Sequence, Any, AsyncGenerator, Generator
 
 import tempfile
+import litellm
 
 import git
 import jwt
@@ -60,18 +61,18 @@ DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS = None  # List of Identity Analytics d
 DOCUMENTATION_IA_PRODUCT_VERSIONS = None  # List of IA product documentation versions
 DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None  # List of IA self-managed documentation versions
 MAX_ITERATIONS = None  # Maximum number of iterations for the ReAct agent
-MISTRAL = "mistral/mistral-small-latest"  # Mistral model name
+MODEL_NAME =None   # Model name
 
 # -----------------------------------------------------------------------------
 # Custom LLM Implementation
 # -----------------------------------------------------------------------------
-class LiteLLMMistralLLM(LLM):
-    """Custom LLM implementation using LiteLLM's completion API with the Mistral model."""
+class LiteLLM(LLM):
+    """Custom LLM implementation using LiteLLM's completion API."""
     
     class Config:
         extra = Extra.allow
 
-    def __init__(self, model=MISTRAL, callback_manager=None, system_prompt=None, **kwargs):
+    def __init__(self, model=MODEL_NAME, callback_manager=None, system_prompt=None, **kwargs):
         super().__init__(callback_manager=callback_manager, system_prompt=system_prompt, **kwargs)
         self.model = model
         self.last_thought = ""  # Stores the last generated thought
@@ -165,7 +166,12 @@ async def lifespan(_app: FastAPI):
     else:
         utils.logger.critical("MAX_ITERATIONS not found in lillisa_server.env")
         raise ValueError("MAX_ITERATIONS not found in lillisa_server.env")
-
+    # Load model name
+    if model := lillisa_server_env.get("MODEL_NAME"):
+        globals()["MODEL_NAME"] = str(model)
+    else:
+        utils.logger.critical("MODEL_NAME not found in lillisa_server.env")
+        raise ValueError("MODEL_NAME not found in lillisa_server.env")
     # Load documentation versions
     for key, var in [
         ("DOCUMENTATION_NEW_VERSIONS", "DOCUMENTATION_NEW_VERSIONS"),
@@ -180,20 +186,20 @@ async def lifespan(_app: FastAPI):
             utils.logger.critical("%s not found in lillisa_server.env", key)
             raise ValueError(f"{key} not found in lillisa_server.env")
 
-    # Load Mistral API key
-    if mistral_api_key_filepath := lillisa_server_env.get("MISTRAL_API_KEY_FILEPATH"):
-        if not os.path.exists(mistral_api_key_filepath):
-            utils.logger.critical("%s not found", mistral_api_key_filepath)
-            raise FileNotFoundError(f"Mistral API key file not found: {mistral_api_key_filepath}")
-        with open(mistral_api_key_filepath, "r", encoding="utf-8") as file:
-            os.environ["MISTRAL_API_KEY"] = file.read().strip()
+    if llm_api_key_filepath := lillisa_server_env.get("llm_API_KEY_FILEPATH"):
+        if not os.path.exists(llm_api_key_filepath):
+            utils.logger.critical("%s not found", llm_api_key_filepath)
+            raise FileNotFoundError(f"LLM API key file not found: {llm_api_key_filepath}")
+        with open(llm_api_key_filepath, "r", encoding="utf-8") as file:
+            api_key = file.read().strip()
+            # Instead of setting an environment variable, assign directly:
+            litellm.api_key = api_key
     else:
-        utils.logger.critical("MISTRAL_API_KEY_FILEPATH not found in lillisa_server.env")
-        raise ValueError("MISTRAL_API_KEY_FILEPATH not found in lillisa_server.env")
-
+        utils.logger.critical("llm_API_KEY_FILEPATH not found in lillisa_server.env")
+        raise ValueError("llm_API_KEY_FILEPATH not found in lillisa_server.env")
     yield
     os.unsetenv("OPENAI_API_KEY")
-    os.unsetenv("MISTRAL_API_KEY")
+    litellm.api_key = None
 
 app = FastAPI(lifespan=lifespan)
 
@@ -274,7 +280,7 @@ async def invoke_stream(session_id: str, locale: str, product: str, nl_query: st
             FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
             FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
         ]
-        llm = LiteLLMMistralLLM(model=MISTRAL)
+        llm = LiteLLM(model=MODEL_NAME)
         react_agent = ReActAgent.from_tools(
             tools=tools,
             llm=llm,
@@ -282,6 +288,7 @@ async def invoke_stream(session_id: str, locale: str, product: str, nl_query: st
             max_iterations=MAX_ITERATIONS
         )
         react_agent_prompt = (
+            
             REACT_AGENT_PROMPT.replace("<PRODUCT>", product)
             .replace("<CONVERSATION_HISTORY>", conversation_history)
             .replace("<QUERY>", nl_query)
@@ -344,7 +351,7 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
             FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
             FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
         ]
-        llm = LiteLLMMistralLLM(model=MISTRAL)
+        llm = LiteLLM(model=MODEL_NAME)
         react_agent = ReActAgent.from_tools(
             tools=tools,
             llm=llm,

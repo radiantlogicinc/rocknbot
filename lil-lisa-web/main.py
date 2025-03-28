@@ -64,6 +64,14 @@ def format_response(response: str) -> str:
             line = line.replace("```", "")
             if not line.strip():
                 continue  # Skip line if nothing remains
+        if "**" in line:
+            line = line.replace("**", "")
+            if not line.strip():
+                continue
+        if "###" in line:
+            line = line.replace("###" , "")
+            if not line.strip():
+                continue
         if line.strip().startswith("###"):
             heading = line.strip()[3:].strip()
             formatted += f"<h3>{heading}</h3>"
@@ -172,6 +180,8 @@ def api_stream_chat():
                             line = line.replace("```", "")
                             if not line.strip():
                                 continue
+                        if line.strip() == "--" or "answer_from_document_retrieval_tool" in line:
+                            continue
                         if line.strip().startswith("###"):
                             heading = line.strip()[3:].strip()
                             yield from stream_with_delay(f"<h3>{heading}</h3>")
