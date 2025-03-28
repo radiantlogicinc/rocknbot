@@ -1,16 +1,11 @@
-"""
-FastAPI application for Lil Lisa Server
-"""
-
 import io
 import os
 import re
 import shutil
-import traceback
 import zipfile
 from contextlib import asynccontextmanager
-from difflib import get_close_matches
 from typing import Optional, Sequence, Any, AsyncGenerator, Generator
+
 import tempfile
 
 import git
@@ -27,7 +22,6 @@ from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 from llama_index.core.tools import FunctionTool
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI as OpenAI_Llama
-
 import lancedb
 from speedict import Rdict
 
@@ -45,7 +39,6 @@ from src.agent_and_tools import (
 from src.lillisa_server_context import LOCALE, LilLisaServerContext
 from src.llama_index_lancedb_vector_store import LanceDBVectorStore
 from src.llama_index_markdown_reader import MarkdownReader
-
 import asyncio
 from llama_index.core.llms import LLM, ChatMessage, ChatResponse, LLMMetadata
 from pydantic import Extra
@@ -55,34 +48,33 @@ import logging
 logging.getLogger('LiteLLM').setLevel(logging.INFO)
 
 # Global configuration variables
-REACT_AGENT_PROMPT = None
-LANCEDB_FOLDERPATH = None
-AUTHENTICATION_KEY = None
-DOCUMENTATION_FOLDERPATH = None
-QA_PAIRS_GITHUB_REPO_URL = None
-QA_PAIRS_FOLDERPATH = None
-DOCUMENTATION_NEW_VERSIONS = None
-DOCUMENTATION_EOC_VERSIONS = None
-DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS = None
-DOCUMENTATION_IA_PRODUCT_VERSIONS = None
-DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None
-MAX_ITERATIONS = None
+REACT_AGENT_PROMPT = None  # Path to the React agent prompt file
+LANCEDB_FOLDERPATH = None  # Path to the LanceDB folder
+AUTHENTICATION_KEY = None  # Authentication key for JWT
+DOCUMENTATION_FOLDERPATH = None  # Path to the documentation folder
+QA_PAIRS_GITHUB_REPO_URL = None  # URL of the GitHub repository for QA pairs
+QA_PAIRS_FOLDERPATH = None  # Path to the QA pairs folder
+DOCUMENTATION_NEW_VERSIONS = None  # List of new documentation versions
+DOCUMENTATION_EOC_VERSIONS = None  # List of EOC documentation versions
+DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS = None  # List of Identity Analytics documentation versions
+DOCUMENTATION_IA_PRODUCT_VERSIONS = None  # List of IA product documentation versions
+DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None  # List of IA self-managed documentation versions
+MAX_ITERATIONS = None  # Maximum number of iterations for the ReAct agent
+MISTRAL = "mistral/mistral-small-latest"  # Mistral model name
 
 # -----------------------------------------------------------------------------
 # Custom LLM Implementation
 # -----------------------------------------------------------------------------
 class LiteLLMMistralLLM(LLM):
-    """
-    Custom LLM implementation using LiteLLM's completion API with Mistral model.
-    Provides chat and streaming capabilities for conversational AI tasks.
-    """
+    """Custom LLM implementation using LiteLLM's completion API with the Mistral model."""
+    
     class Config:
         extra = Extra.allow
 
-    def __init__(self, model="mistral/mistral-small-latest", callback_manager=None, system_prompt=None, **kwargs):
+    def __init__(self, model=MISTRAL, callback_manager=None, system_prompt=None, **kwargs):
         super().__init__(callback_manager=callback_manager, system_prompt=system_prompt, **kwargs)
         self.model = model
-        self.last_thought = ""
+        self.last_thought = ""  # Stores the last generated thought
 
     @property
     def metadata(self) -> LLMMetadata:
@@ -155,7 +147,7 @@ async def lifespan(_app: FastAPI):
             utils.logger.critical("%s not found in lillisa_server.env", key)
             raise ValueError(f"{key} not found in lillisa_server.env")
 
-    # Load React agent prompt file
+    # Load and validate React agent prompt file
     if not os.path.exists(REACT_AGENT_PROMPT):
         utils.logger.critical("%s not found", REACT_AGENT_PROMPT)
         raise NotImplementedError(f"{REACT_AGENT_PROMPT} not found")
@@ -248,10 +240,10 @@ def get_llsc(session_id: str, locale: Optional[LOCALE] = None, product: Optional
 # -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
-@app.post("/invoke/", response_model=str, response_class=PlainTextResponse)
-async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool) -> str:
+@app.post("/invoke_stream/", response_class=StreamingResponse)
+async def invoke_stream(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool):
     """
-    Processes a natural language query or records an expert answer.
+    Processes a natural language query or expert answer with streaming response.
 
     Args:
         session_id (str): Unique identifier for the session.
@@ -261,7 +253,79 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
         is_expert_answering (bool): Indicates if an expert is providing the answer.
 
     Returns:
-        str: Response from the AI or expert answer.
+        StreamingResponse: Streamed response from AI or expert answer.
+
+    Raises:
+        HTTPException: On internal errors or invalid input.
+    """
+    try:
+        utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
+        llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
+        
+        if is_expert_answering:
+            llsc.add_to_conversation_history("Expert", nl_query)
+            async def expert_gen():
+                yield nl_query.encode("utf-8")
+            return StreamingResponse(expert_gen(), media_type="text/plain")
+        
+        conversation_history = "\n".join(f"{poster}: {message}" for poster, message in llsc.conversation_history)
+        tools = [
+            FunctionTool.from_defaults(fn=improve_query),
+            FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
+            FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
+        ]
+        llm = LiteLLMMistralLLM(model=MISTRAL)
+        react_agent = ReActAgent.from_tools(
+            tools=tools,
+            llm=llm,
+            verbose=(utils.LOG_LEVEL == utils.logging.DEBUG),
+            max_iterations=MAX_ITERATIONS
+        )
+        react_agent_prompt = (
+            REACT_AGENT_PROMPT.replace("<PRODUCT>", product)
+            .replace("<CONVERSATION_HISTORY>", conversation_history)
+            .replace("<QUERY>", nl_query)
+        )
+
+        async def token_generator():
+            full_response = ""
+            async for token in llm.astream_complete(react_agent_prompt):
+                token = token or ""
+                full_response += token
+                # print("Chain-of-thought token:", token, flush=True)
+                yield token.encode("utf-8")
+                await asyncio.sleep(0.01)
+            llsc.add_to_conversation_history("User", nl_query)
+            llsc.add_to_conversation_history("Assistant", full_response)
+
+        return StreamingResponse(token_generator(), media_type="text/plain")
+    
+    except HTTPException as exc:
+        raise exc
+    except Exception as exc:
+        if isinstance(exc, ValueError) and "Reached max iterations." in str(exc):
+            final_response = llm.last_thought if llm.last_thought else ""
+            utils.logger.info("Returning last thought for session %s: %s", session_id, final_response)
+            llsc.add_to_conversation_history("User", nl_query)
+            llsc.add_to_conversation_history("Assistant", final_response)
+            return final_response
+        utils.logger.critical("Internal error in invoke_stream() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc)
+        raise HTTPException(status_code=500, detail=f"Internal error in invoke_stream() for session_id: {session_id}") from exc
+
+@app.post("/invoke/", response_model=str, response_class=PlainTextResponse)
+async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool) -> str:
+    """
+    Processes a natural language query or expert answer without streaming.
+
+    Args:
+        session_id (str): Unique identifier for the session.
+        locale (str): Locale of the conversation.
+        product (str): Product ("IDA" or "IDDM").
+        nl_query (str): Natural language query or expert answer.
+        is_expert_answering (bool): Indicates if an expert is providing the answer.
+
+    Returns:
+        str: Response from AI or expert answer.
 
     Raises:
         HTTPException: On internal errors or invalid input.
@@ -275,20 +339,18 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
             return nl_query
 
         conversation_history = "\n".join(f"{poster}: {message}" for poster, message in llsc.conversation_history)
-
         tools = [
             FunctionTool.from_defaults(fn=improve_query),
             FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
             FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
         ]
-        llm = LiteLLMMistralLLM(model="mistral/mistral-small-latest")
+        llm = LiteLLMMistralLLM(model=MISTRAL)
         react_agent = ReActAgent.from_tools(
             tools=tools,
             llm=llm,
             verbose=(utils.LOG_LEVEL == utils.logging.DEBUG),
             max_iterations=MAX_ITERATIONS
         )
-
         react_agent_prompt = (
             REACT_AGENT_PROMPT.replace("<PRODUCT>", product)
             .replace("<CONVERSATION_HISTORY>", conversation_history)
@@ -312,13 +374,14 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
         raise HTTPException(status_code=500, detail=f"Internal error in invoke() for session_id: {session_id}") from exc
 
 @app.post("/record_endorsement/", response_model=str, response_class=PlainTextResponse)
-async def record_endorsement(session_id: str, is_expert: bool) -> str:
+async def record_endorsement(session_id: str, is_expert: bool, thumbs_up: bool) -> str:
     """
     Records an endorsement for a conversation.
 
     Args:
         session_id (str): Unique identifier for the session.
         is_expert (bool): True if the endorsement is from an expert.
+        thumbs_up (bool): True if the endorsement is positive.
 
     Returns:
         str: "ok" on success.
@@ -327,9 +390,9 @@ async def record_endorsement(session_id: str, is_expert: bool) -> str:
         HTTPException: On internal errors.
     """
     try:
-        utils.logger.info("session_id: %s, is_expert: %s", session_id, is_expert)
+        utils.logger.info("session_id: %s, is_expert: %s, thumbs_up: %s", session_id, is_expert, thumbs_up)
         llsc = get_llsc(session_id)
-        llsc.record_endorsement(is_expert)
+        llsc.record_endorsement(is_expert, thumbs_up)
         return "ok"
     except HTTPException as exc:
         raise exc
@@ -607,13 +670,39 @@ async def rebuild_docs(encrypted_key: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    """Returns a simple status page for the server."""
+    """Returns a status page with a streaming example."""
     return """
     <html>
-        <head><title>LIL LISA SERVER</title></head>
+        <head>
+            <title>LIL LISA SERVER Streaming Example</title>
+        </head>
         <body>
             <h1>LIL LISA SERVER is up and running!</h1>
-            For usage instructions, see the <a href='./docs'>Swagger API</a>
+            <div id="chat-output" style="border: 1px solid #ccc; padding: 10px; height: 300px; overflow: auto;"></div>
+            <script>
+                fetch("http://127.0.0.1:8080/invoke_stream/?session_id=session1&locale=en&product=IDDM&nl_query=Please+provide+streaming+output+details+for+here&is_expert_answering=false")
+                    .then(response => {
+                        if (!response.body) {
+                          throw new Error("ReadableStream not supported in this browser.");
+                        }
+                        const reader = response.body.getReader();
+                        const decoder = new TextDecoder();
+                        function readStream() {
+                            reader.read().then(({ done, value }) => {
+                                if (done) {
+                                    console.log("Stream complete");
+                                    return;
+                                }
+                                const chunk = decoder.decode(value, { stream: true });
+                                document.getElementById("chat-output").innerHTML += chunk;
+                                readStream();
+                            }).catch(error => console.error("Error reading stream:", error));
+                        }
+                        readStream();
+                    })
+                    .catch(error => console.error("Streaming error:", error));
+            </script>
+            <p>For usage instructions, see the <a href='./docs'>Swagger API</a></p>
         </body>
     </html>
     """
