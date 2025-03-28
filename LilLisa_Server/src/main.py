@@ -61,7 +61,7 @@ DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS = None  # List of Identity Analytics d
 DOCUMENTATION_IA_PRODUCT_VERSIONS = None  # List of IA product documentation versions
 DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None  # List of IA self-managed documentation versions
 MAX_ITERATIONS = None  # Maximum number of iterations for the ReAct agent
-MODEL_NAME =None   # Model name
+LLM_MODEL =None   # Model name
 
 # -----------------------------------------------------------------------------
 # Custom LLM Implementation
@@ -72,7 +72,7 @@ class LiteLLM(LLM):
     class Config:
         extra = Extra.allow
 
-    def __init__(self, model=MODEL_NAME, callback_manager=None, system_prompt=None, **kwargs):
+    def __init__(self, model=LLM_MODEL, callback_manager=None, system_prompt=None, **kwargs):
         super().__init__(callback_manager=callback_manager, system_prompt=system_prompt, **kwargs)
         self.model = model
         self.last_thought = ""  # Stores the last generated thought
@@ -167,11 +167,11 @@ async def lifespan(_app: FastAPI):
         utils.logger.critical("MAX_ITERATIONS not found in lillisa_server.env")
         raise ValueError("MAX_ITERATIONS not found in lillisa_server.env")
     # Load model name
-    if model := lillisa_server_env.get("MODEL_NAME"):
-        globals()["MODEL_NAME"] = str(model)
+    if model := lillisa_server_env.get("LLM_MODEL"):
+        globals()["LLM_MODEL"] = str(model)
     else:
-        utils.logger.critical("MODEL_NAME not found in lillisa_server.env")
-        raise ValueError("MODEL_NAME not found in lillisa_server.env")
+        utils.logger.critical("LLM_MODEL not found in lillisa_server.env")
+        raise ValueError("LLM_MODEL not found in lillisa_server.env")
     # Load documentation versions
     for key, var in [
         ("DOCUMENTATION_NEW_VERSIONS", "DOCUMENTATION_NEW_VERSIONS"),
@@ -280,7 +280,7 @@ async def invoke_stream(session_id: str, locale: str, product: str, nl_query: st
             FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
             FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
         ]
-        llm = LiteLLM(model=MODEL_NAME)
+        llm = LiteLLM(model=LLM_MODEL)
         react_agent = ReActAgent.from_tools(
             tools=tools,
             llm=llm,
@@ -351,7 +351,7 @@ async def invoke(session_id: str, locale: str, product: str, nl_query: str, is_e
             FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
             FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
         ]
-        llm = LiteLLM(model=MODEL_NAME)
+        llm = LiteLLM(model=LLM_MODEL)
         react_agent = ReActAgent.from_tools(
             tools=tools,
             llm=llm,
