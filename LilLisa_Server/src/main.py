@@ -195,8 +195,8 @@ async def lifespan(_app: FastAPI):
             # Instead of setting an environment variable, assign directly:
             litellm.api_key = api_key
     else:
-        utils.logger.critical("llm_API_KEY_FILEPATH not found in lillisa_server.env")
-        raise ValueError("llm_API_KEY_FILEPATH not found in lillisa_server.env")
+        utils.logger.critical("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
+        raise ValueError("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
     yield
     os.unsetenv("OPENAI_API_KEY")
     litellm.api_key = None
