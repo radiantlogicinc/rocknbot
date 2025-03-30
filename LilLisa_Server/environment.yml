@@ -20,7 +20,7 @@ dependencies:
     - llama-index==0.12.25
     - llama-index-vector-stores-lancedb==0.3.0
     - mangum==0.17.0
-    - openai==1.63.2
+    - openai==1.68.2
     - sentence-transformers==3.0.1
     - speedict==0.3.12
     - tiktoken==0.7.0
