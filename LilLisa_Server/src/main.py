@@ -186,17 +186,17 @@ async def lifespan(_app: FastAPI):
             utils.logger.critical("%s not found in lillisa_server.env", key)
             raise ValueError(f"{key} not found in lillisa_server.env")
 
-    if llm_api_key_filepath := lillisa_server_env.get("llm_API_KEY_FILEPATH"):
-        if not os.path.exists(llm_api_key_filepath):
-            utils.logger.critical("%s not found", llm_api_key_filepath)
-            raise FileNotFoundError(f"LLM API key file not found: {llm_api_key_filepath}")
-        with open(llm_api_key_filepath, "r", encoding="utf-8") as file:
+    if LLM_API_KEY_FILEPATH := lillisa_server_env.get("LLM_API_KEY_FILEPATH"):
+        if not os.path.exists(LLM_API_KEY_FILEPATH):
+            utils.logger.critical("%s not found", LLM_API_KEY_FILEPATH)
+            raise FileNotFoundError(f"LLM API key file not found: {LLM_API_KEY_FILEPATH}")
+        with open(LLM_API_KEY_FILEPATH, "r", encoding="utf-8") as file:
             api_key = file.read().strip()
             # Instead of setting an environment variable, assign directly:
             litellm.api_key = api_key
     else:
-        utils.logger.critical("llm_API_KEY_FILEPATH not found in lillisa_server.env")
-        raise ValueError("llm_API_KEY_FILEPATH not found in lillisa_server.env")
+        utils.logger.critical("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
+        raise ValueError("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
     yield
     os.unsetenv("OPENAI_API_KEY")
     litellm.api_key = None
