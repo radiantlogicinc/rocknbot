@@ -18,7 +18,7 @@ RUN conda env create -f environment.yml
 
 # Copy the app code and files to the container
 COPY data /app/data
-COPY ./build/env /app/env
+COPY env /app/env
 COPY lancedb /app/lancedb
 COPY passwords /app/passwords
 COPY src /app/src

@@ -164,7 +164,11 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                 if "db://" not in uri:
                     object.__setattr__(self, "_connection", lancedb.connect(uri))
                     warnings.warn("api key provided with local uri. The data will be stored locally")
-                object.__setattr__(self, "_connection", lancedb.connect(uri, api_key=api_key or os.getenv("LANCE_API_KEY"), region=region))
+                object.__setattr__(
+                    self,
+                    "_connection",
+                    lancedb.connect(uri, api_key=api_key or os.getenv("LANCE_API_KEY"), region=region),
+                )
 
         if table is not None:
             try:
@@ -172,7 +176,9 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                 object.__setattr__(self, "_table", table)
                 object.__setattr__(self, "_table_name", table.name if hasattr(table, "name") else "remote_table")
             except AssertionError:
-                raise ValueError("`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object.")
+                raise ValueError(
+                    "`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object."
+                )
         else:
             if self._table_exists():
                 object.__setattr__(self, "_table", self._connection.open_table(table_name))
@@ -342,7 +348,9 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             lance_query = self._table.search(query=_query, vector_column_name=self.vector_column_name)
             if hasattr(lance_query, "metric"):
                 lance_query = lance_query.metric("cosine")
-            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
+            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(
+                where, prefilter=True
+            )
             if hasattr(lance_query, "nprobes"):
                 lance_query.nprobes(self.nprobes)
             results = lance_query.to_pandas()
@@ -352,7 +360,9 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             lance_query = self._table.search(query=_query, vector_column_name=self.vector_column_name)
             if hasattr(lance_query, "metric"):
                 lance_query = lance_query.metric("cosine")
-            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
+            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(
+                where, prefilter=True
+            )
             results = lance_query.to_pandas()
 
         elif query_type == "hybrid":
@@ -366,7 +376,9 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             vector_query = self._table.search(query=query.query_embedding, vector_column_name=self.vector_column_name)
             if hasattr(vector_query, "metric"):
                 vector_query = vector_query.metric("cosine")
-            vector_query = vector_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
+            vector_query = vector_query.limit(query.similarity_top_k * self.overfetch_factor).where(
+                where, prefilter=True
+            )
             if hasattr(vector_query, "nprobes"):
                 vector_query.nprobes(self.nprobes)
             vector_results = vector_query.to_pandas()

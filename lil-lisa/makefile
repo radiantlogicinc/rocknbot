@@ -3,10 +3,10 @@ SHELL = /bin/bash
 APP_NAMESPACE=lil-lisa
 
 AWS_ACCOUNT = $(shell aws sts get-caller-identity --query 'Account' --output text)
-AWS_REGION = $(shell aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text)
+AWS_REGION = us-west-2#$(shell aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text)
 
 IMAGE=lil-lisa
-TAG=2.1.7
+TAG=2.2.0
 
 .EXPORT_ALL_VARIABLES:
 
@@ -57,3 +57,8 @@ push-image-to-aws:
 	aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
 	docker tag ${IMAGE}:${TAG} ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}:${TAG}
 	docker push ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}:${TAG}
+
+# has to be done in terminal
+pull-image-from-aws:
+	aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
+	docker pull ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}:${TAG}

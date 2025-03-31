@@ -90,6 +90,7 @@ class FormatterNs(logging.Formatter):
             return super().formatTime(record, datefmt)  # ... leave to original implementation
         return format_ns(record.created_ns)
 
+
 logging.setLogRecordFactory(LogRecordNs)
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(filename)s-%(funcName)s - %(message)s"

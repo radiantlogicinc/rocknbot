@@ -268,7 +268,7 @@ def answer_from_document_retrieval(
         if 0.85 <= node.score <= 1.0:
             relevant_qa_nodes.append(node)
         # elif 0.8 <= node.score < 0.95:
-            # relevant_qa_nodes.append(node)
+        # relevant_qa_nodes.append(node)
         elif 0.7 <= node.score < 0.85:
             potentially_relevant_qa_nodes.append(node)
 
@@ -285,7 +285,7 @@ def answer_from_document_retrieval(
 
     nodes = document_retriever.retrieve(query)
     reranked_nodes = RERANKER.postprocess_nodes(nodes=nodes, query_str=query)[:10]
-    useful_links = list(dict.fromkeys([node.metadata['github_url'] for node in reranked_nodes]))[:3]
+    useful_links = list(dict.fromkeys([node.metadata["github_url"] for node in reranked_nodes]))[:3]
     chunks = "\n\n".join(f"{node.text}" for node in reranked_nodes)
 
     user_prompt = QA_USER_PROMPT.replace("<CONTEXT>", chunks)

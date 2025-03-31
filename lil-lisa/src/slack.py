@@ -31,10 +31,9 @@ CHANNEL_ID_IDA = lil_lisa_env["CHANNEL_ID_IDA"]
 ADMIN_CHANNEL_ID_IDA = lil_lisa_env["ADMIN_CHANNEL_ID_IDA"]
 EXPERT_USER_ID_IDA = lil_lisa_env["EXPERT_USER_ID_IDA"]
 EXPERT_USER_ID_IDDM = lil_lisa_env["EXPERT_USER_ID_IDDM"]
-SECRET_AUTHENTICATION_KEY = lil_lisa_env["AUTHENTICATION_KEY"]
-ENCRYPTED_AUTHENTICATION_KEY = jwt.encode({"some": "payload"}, SECRET_AUTHENTICATION_KEY, algorithm="HS256")  # type: ignore
+AUTHENTICATION_KEY = lil_lisa_env["AUTHENTICATION_KEY"]
+ENCRYPTED_AUTHENTICATION_KEY = jwt.encode({"some": "payload"}, AUTHENTICATION_KEY, algorithm="HS256")  # type: ignore
 
-REMOTE_NAME = lil_lisa_env["REMOTE_NAME"]
 BASE_URL = os.getenv("LIL_LISA_SERVER_URL", lil_lisa_env["LIL_LISA_SERVER_URL"])
 BASE_URL = BASE_URL.rstrip('/')     # this is IMPORTANT! Otherwise you will see {"detail": "Not Found"} in the response
 logger.info(f"LIL_LISA_SERVER_URL: {BASE_URL}")
