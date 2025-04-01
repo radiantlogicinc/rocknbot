@@ -270,61 +270,15 @@ def get_llsc(
 # -----------------------------------------------------------------------------
 @app.post("/invoke_stream/", response_class=StreamingResponse)
 async def invoke_stream(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool):
-    try:
-        utils.logger.info(
-            "session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query
-        )
-        llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
+    # Call the synchronous invoke function
+    result = invoke(session_id, locale, product, nl_query, is_expert_answering)
 
-        if is_expert_answering:
-            llsc.add_to_conversation_history("Expert", nl_query)
+    # Define an async generator that yields the result once
+    async def stream_generator():
+        yield result
 
-            async def expert_gen():
-                yield nl_query.encode("utf-8")
-
-            return StreamingResponse(expert_gen(), media_type="text/plain")
-
-        conversation_history = "\n".join(f"{poster}: {message}" for poster, message in llsc.conversation_history)
-        tools = [
-            FunctionTool.from_defaults(fn=improve_query),
-            FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
-            FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
-        ]
-        llm = LiteLLM(model=LLM_MODEL)
-        react_agent = ReActAgent.from_tools(
-            tools=tools, llm=llm, verbose=(utils.LOG_LEVEL == utils.logging.DEBUG), max_iterations=MAX_ITERATIONS
-        )
-        react_agent_prompt = (
-            REACT_AGENT_PROMPT.replace("<PRODUCT>", product)
-            .replace("<CONVERSATION_HISTORY>", conversation_history)
-            .replace("<QUERY>", nl_query)
-        )
-
-        async def token_generator():
-            stream_response = react_agent.stream_chat(react_agent_prompt)
-            stream_response.print_response_stream()
-
-            # Add to conversation history
-            llsc.add_to_conversation_history("User", nl_query)
-            llsc.add_to_conversation_history("Assistant", stream_response.response)
-
-        return StreamingResponse(token_generator(), media_type="text/plain")
-
-    except HTTPException as exc:
-        raise exc
-    except Exception as exc:
-        if isinstance(exc, ValueError) and "Reached max iterations." in str(exc):
-            final_response = llm.last_thought or ""
-            utils.logger.info("Returning last thought for session %s: %s", session_id, final_response)
-            llsc.add_to_conversation_history("User", nl_query)
-            llsc.add_to_conversation_history("Assistant", final_response)
-            return StreamingResponse(iter([final_response.encode("utf-8")]), media_type="text/plain")
-        utils.logger.critical(
-            "Internal error in invoke_stream() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc
-        )
-        raise HTTPException(
-            status_code=500, detail=f"Internal error in invoke_stream() for session_id: {session_id}"
-        ) from exc
+    # Return the generator for StreamingResponse
+    return StreamingResponse(stream_generator())
 
 
 @app.post("/invoke/", response_model=str, response_class=PlainTextResponse)

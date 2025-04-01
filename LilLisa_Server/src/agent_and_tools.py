@@ -218,7 +218,7 @@ def improve_query(query: str, conversation_history: str) -> str:
 
     Based on the conversation history and query, generate a new query that links the two, maximizing semantic understanding.
     """
-    response += (
+    response = (
         completion(
             model=LLM_MODEL, 
             messages=[
