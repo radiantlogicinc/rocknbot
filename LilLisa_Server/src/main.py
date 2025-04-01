@@ -270,22 +270,6 @@ def get_llsc(
 # -----------------------------------------------------------------------------
 @app.post("/invoke_stream/", response_class=StreamingResponse)
 async def invoke_stream(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool):
-    """
-    Processes a natural language query or expert answer with streaming response.
-
-    Args:
-        session_id (str): Unique identifier for the session.
-        locale (str): Locale of the conversation.
-        product (str): Product ("IDA" or "IDDM").
-        nl_query (str): Natural language query or expert answer.
-        is_expert_answering (bool): Indicates if an expert is providing the answer.
-
-    Returns:
-        StreamingResponse: Streamed response from AI or expert answer.
-
-    Raises:
-        HTTPException: On internal errors or invalid input.
-    """
     try:
         utils.logger.info(
             "session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query
@@ -317,15 +301,12 @@ async def invoke_stream(session_id: str, locale: str, product: str, nl_query: st
         )
 
         async def token_generator():
-            full_response = ""
-            async for token in llm.astream_complete(react_agent_prompt):
-                token = token or ""
-                full_response += token
-                # print("Chain-of-thought token:", token, flush=True)
-                yield token.encode("utf-8")
-                await asyncio.sleep(0.01)
+            stream_response = react_agent.stream_chat(react_agent_prompt)
+            stream_response.print_response_stream()
+
+            # Add to conversation history
             llsc.add_to_conversation_history("User", nl_query)
-            llsc.add_to_conversation_history("Assistant", full_response)
+            llsc.add_to_conversation_history("Assistant", stream_response.response)
 
         return StreamingResponse(token_generator(), media_type="text/plain")
 
@@ -337,7 +318,7 @@ async def invoke_stream(session_id: str, locale: str, product: str, nl_query: st
             utils.logger.info("Returning last thought for session %s: %s", session_id, final_response)
             llsc.add_to_conversation_history("User", nl_query)
             llsc.add_to_conversation_history("Assistant", final_response)
-            return final_response
+            return StreamingResponse(iter([final_response.encode("utf-8")]), media_type="text/plain")
         utils.logger.critical(
             "Internal error in invoke_stream() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc
         )
@@ -365,30 +346,47 @@ def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_
         HTTPException: On internal errors or invalid input.
     """
     try:
-        utils.logger.info(
-            "session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query
+        utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
+        llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
+
+        if is_expert_answering:
+            llsc.add_to_conversation_history("Expert", nl_query)
+            return nl_query
+
+        conversation_history = "\n".join(f"{poster}: {message}" for poster, message in llsc.conversation_history)
+        tools = [
+            FunctionTool.from_defaults(fn=improve_query),
+            FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
+            FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
+        ]
+        llm = LiteLLM(model=LLM_MODEL)
+        react_agent = ReActAgent.from_tools(
+            tools=tools,
+            llm=llm,
+            verbose=(utils.LOG_LEVEL == utils.logging.DEBUG),
+            max_iterations=MAX_ITERATIONS
         )
-            
-        # Call the async streaming function and collect the entire response
-        async def collect_response():
-            streaming_response = await invoke_stream(session_id, locale, product, nl_query, is_expert_answering)
-            content = bytearray()
-            async for chunk in streaming_response.body_iterator:
-                if isinstance(chunk, str):
-                    content.extend(chunk.encode('utf-8'))
-                else:
-                    content.extend(chunk)
-            return content.decode('utf-8')
-        
-        return asyncio.run(collect_response())
-            
+        react_agent_prompt = (
+            REACT_AGENT_PROMPT.replace("<PRODUCT>", product)
+            .replace("<CONVERSATION_HISTORY>", conversation_history)
+            .replace("<QUERY>", nl_query)
+        )
+        response = react_agent.chat(react_agent_prompt).response
+        llsc.add_to_conversation_history("User", nl_query)
+        llsc.add_to_conversation_history("Assistant", response)
+        return response
+
+    except HTTPException as exc:
+        raise exc
     except Exception as exc:
-        print(
-            "Internal error in invoke() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc
-        )
-        raise HTTPException(
-            status_code=500, detail=f"Internal error in invoke() for session_id: {session_id}"
-        ) from exc
+        if isinstance(exc, ValueError) and "Reached max iterations." in str(exc):
+            final_response = llm.last_thought or ""
+            utils.logger.info("Returning last thought for session %s: %s", session_id, final_response)
+            llsc.add_to_conversation_history("User", nl_query)
+            llsc.add_to_conversation_history("Assistant", final_response)
+            return final_response
+        utils.logger.critical("Internal error in invoke() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc)
+        raise HTTPException(status_code=500, detail=f"Internal error in invoke() for session_id: {session_id}") from exc
 
 
 @app.post("/record_endorsement/", response_model=str, response_class=PlainTextResponse)

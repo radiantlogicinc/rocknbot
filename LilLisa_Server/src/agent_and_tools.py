@@ -2,12 +2,15 @@
 ReAct agent that handles a query in an intelligent manner
 """
 
+
+
 import os
 import re
 import traceback
 from difflib import get_close_matches
 from enum import Enum
 
+from litellm import completion
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.postprocessor import SentenceTransformerRerank
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -34,6 +37,12 @@ IDDM_PRODUCT_VERSIONS = None
 IDA_PRODUCT_VERSIONS = None
 
 lillisa_server_env = utils.LILLISA_SERVER_ENV_DICT
+
+if not (LLM_MODEL := lillisa_server_env.get("LLM_MODEL")):
+    traceback.print_exc()
+    utils.logger.critical("LLM_MODEL not found in lillisa_server.env")
+    raise ValueError("LLM_MODEL not found in lillisa_server.env")
+
 if fp := lillisa_server_env["SPEEDICT_FOLDERPATH"]:
     speedict_folderpath = str(fp)
 else:
@@ -112,7 +121,7 @@ else:
 if not os.path.exists(lancedb_folderpath):
     traceback.print_exc()
     utils.logger.critical("%s not found", lancedb_folderpath)
-    raise NotImplementedError("%s not found" % lancedb_folderpath)  # pylint: disable=consider-using-f-string
+    raise NotImplementedError(f"{lancedb_folderpath} not found")
 
 if iddm_product_versions := lillisa_server_env["IDDM_PRODUCT_VERSIONS"]:
     IDDM_PRODUCT_VERSIONS = str(iddm_product_versions).split(", ")
@@ -131,7 +140,13 @@ else:
 
 # Establish connection to LanceDB
 db = lancedb.connect(lancedb_folderpath)
-Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-large")
+Settings.embed_model = OpenAIEmbedding(
+    model="text-embedding-3-large",
+    retry_on_ratelimit=True,
+    max_retries=5,
+    backoff_factor=2.0,
+    embed_batch_size=4  # Default is 10, reducing to spread out API calls
+)
 iddm_table = db.open_table("IDDM")
 ida_table = db.open_table("IDA")
 iddm_qa_pairs_table = db.open_table("IDDM_QA_PAIRS")
@@ -203,12 +218,16 @@ def improve_query(query: str, conversation_history: str) -> str:
 
     Based on the conversation history and query, generate a new query that links the two, maximizing semantic understanding.
     """
-    response = (
-        OPENAI_CLIENT.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": user_prompt}])
+    response += (
+        completion(
+            model=LLM_MODEL, 
+            messages=[
+                {"role": "user", "content": user_prompt}
+            ],
+        )
         .choices[0]
         .message.content
     )
-
     return response
 
 
@@ -241,12 +260,14 @@ def answer_from_document_retrieval(
         default_document_retriever = IDA_RETRIEVER
         default_qa_pairs_retriever = IDA_QA_PAIRS_RETRIEVER
 
-    matched_versions = get_matching_versions(original_query, product_versions, version_pattern)
-
-    if matched_versions:
+    if matched_versions := get_matching_versions(
+        original_query, product_versions, version_pattern
+    ):
         qa_system_prompt += f"\n10. Mention the product version(s) you used to craft your response were '{' and '.join(matched_versions)}'"
         lance_filter_documents = " OR ".join(f"(metadata.version = '{version}')" for version in matched_versions)
-        lance_filter_qa_pairs = "(metadata.version = 'none') OR " + lance_filter_documents
+        lance_filter_qa_pairs = (
+            f"(metadata.version = 'none') OR {lance_filter_documents}"
+        )
         document_retriever = document_index.as_retriever(
             vector_store_kwargs={"where": lance_filter_documents}, similarity_top_k=50
         )
@@ -259,7 +280,6 @@ def answer_from_document_retrieval(
         qa_pairs_retriever = default_qa_pairs_retriever
 
     qa_nodes = qa_pairs_retriever.retrieve(query)
-    exact_qa_nodes = []
     relevant_qa_nodes = []
     potentially_relevant_qa_nodes = []
 
@@ -293,9 +313,12 @@ def answer_from_document_retrieval(
     user_prompt = user_prompt.replace("<QUESTION>", original_query)
 
     response += (
-        OPENAI_CLIENT.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": qa_system_prompt}, {"role": "user", "content": user_prompt}],
+        completion(
+            model=LLM_MODEL, 
+            messages=[
+                {"role": "system", "content": qa_system_prompt}, 
+                {"role": "user", "content": user_prompt}
+            ],
         )
         .choices[0]
         .message.content
@@ -320,7 +343,8 @@ def get_matching_versions(query, product_versions, version_pattern):
     extracted_versions = version_pattern.findall(query)
     matched_versions = []
     for extracted_version in extracted_versions:
-        closest_match = get_close_matches(extracted_version, product_versions, n=1, cutoff=0.4)
-        if closest_match:
+        if closest_match := get_close_matches(
+            extracted_version, product_versions, n=1, cutoff=0.4
+        ):
             matched_versions.append(closest_match[0])
     return matched_versions
