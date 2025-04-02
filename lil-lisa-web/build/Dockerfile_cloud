@@ -25,4 +25,4 @@ EXPOSE 8080
 
 # Use gunicorn as the production server.
 # "main:app" tells gunicorn to import the Flask app object (named "app") from main.py.
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa-web", "gunicorn", "-b", "0.0.0.0:8080", "main:app", "-t 90"]
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa-web", "gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "90", "main:app"]

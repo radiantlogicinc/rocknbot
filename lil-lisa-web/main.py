@@ -64,7 +64,7 @@ def api_chat():
             "nl_query": nl_query,
             "is_expert_answering": is_expert
         }
-        resp = requests.post(invoke_url, params=params, timeout=180)
+        resp = requests.post(invoke_url, params=params, timeout=90)
         resp.raise_for_status()
         answer = resp.text
         formatted_answer = format_response(answer)
