@@ -1,0 +1,11 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "lil-lisa-web",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "main"
+        }
+    ]
+}
