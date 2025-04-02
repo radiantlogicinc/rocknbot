@@ -75,12 +75,23 @@ def api_chat():
       return jsonify({
           "error": "The request timed out. The server might be busy or unavailable.",
           "details": str(e)
-      }), 504    
+      }), 504
+    
+    except requests.exceptions.RequestException as e:
+      logger.error(f"Request error while retrieving response: {str(e)}")
+      return jsonify({
+          "error": "Failed to communicate with the server",
+          "details": str(e)
+      }), 503
     except Exception as e:
-        traceback.print_exc()
-        
-        return jsonify({"error": f"Internal error: {str(e)}"}), 500
-
+      logger.error(f"Internal error while retrieving response: {str(e)}")
+      logger.error(traceback.format_exc())
+    
+      return jsonify({
+          "error": "Internal server error",
+          "details": f"{e.__class__.__name__}: {str(e)}"
+      }), 500
+    
 @app.route("/api/thumbsup", methods=["POST"])
 def api_thumbsup():
     data = request.get_json()

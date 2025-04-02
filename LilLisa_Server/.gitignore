@@ -20,8 +20,9 @@ tox.ini
 speedict/*
 
 # Ignore contents of lancedb folder
-lancedb/IDDM.lance/_indices
-lancedb/IDA.lance/_indices
+
+lancedb/*/_indices
+
 
 # Ignore passwords
 passwords/
