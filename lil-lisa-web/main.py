@@ -64,7 +64,7 @@ def api_chat():
             "nl_query": nl_query,
             "is_expert_answering": is_expert
         }
-        resp = requests.post(invoke_url, params=params, timeout=4)
+        resp = requests.post(invoke_url, params=params, timeout=180)
         resp.raise_for_status()
         answer = resp.text
         formatted_answer = format_response(answer)
@@ -73,15 +73,13 @@ def api_chat():
     except requests.exceptions.Timeout as e:
       logger.error(f"Request timed out: {str(e)}")
       return jsonify({
-            "error": "SERVER_TIMEOUT",
-            "message": "Request processing took too long. We are working on resolving this issue.",
-            "details": str(e)
-      }), 504
+          "error": "The request timed out. The server might be busy or unavailable.",
+          "details": str(e)
+      }), 504    
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": f"Internal error: {str(e)}"}), 500       
-    
         
+        return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
 @app.route("/api/thumbsup", methods=["POST"])
 def api_thumbsup():
@@ -556,41 +554,37 @@ def index():
       }
       
       try {
-        const response = await fetch('/api/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session_id: sessions[currentProduct].sessionId,
-                product: currentProduct,
-                query: userQuery,
-                locale: locale,
-                is_expert: false
-            })
-        });
-        
-        const data = await response.json();
-        removeLoadingIndicator();
-        
-        if (data.error === "SERVER_TIMEOUT") {
-            appendMessage(data.message, 'system');
-            return;
-        }
-        
-        if (data.session_id) {
-            sessions[currentProduct].sessionId = data.session_id;
-        }
-        
-        if (data.answer) {
-            simulateTyping(data.answer);
-        } else {
-            appendMessage("Sorry, I couldn't generate a response. Please try again.", 'system');
-        }
-    } catch (err) {
-        console.error('Error:', err);
-        removeLoadingIndicator();
-        appendMessage("Something went wrong. Please try again later.", 'system');
+          const response = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                  session_id: sessions[currentProduct].sessionId,
+                  product: currentProduct,
+                  query: userQuery,
+                  locale: locale,
+                  is_expert: false
+              })
+          });
+          
+          const data = await response.json();
+          removeLoadingIndicator();
+          
+          if (data.session_id) {
+              sessions[currentProduct].sessionId = data.session_id;
+          }
+          
+          if (data.answer) {
+              simulateTyping(data.answer);
+          } else {
+              appendMessage("[Error: No answer returned]", 'assistant');
+          }
+      } catch (err) {
+          console.error('Error:', err);
+          removeLoadingIndicator();
+          appendMessage("[Error: Failed to get response]", 'assistant');
+      }
     }
-}
+
     function simulateTyping(text) {
       if ((text.startsWith("'") && text.endsWith("'")) ||
           (text.startsWith('"') && text.endsWith('"'))) {
