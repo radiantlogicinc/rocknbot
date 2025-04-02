@@ -1,3 +1,4 @@
-main2.py
-main3.py
 lil-lisa-web.env
+
+# Ignore Python bytecode cache
+__pycache__/
