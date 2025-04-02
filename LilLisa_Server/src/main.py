@@ -270,15 +270,20 @@ def get_llsc(
 # -----------------------------------------------------------------------------
 @app.post("/invoke_stream/", response_class=StreamingResponse)
 async def invoke_stream(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool):
-    # Call the synchronous invoke function
-    result = invoke(session_id, locale, product, nl_query, is_expert_answering)
-
-    # Define an async generator that yields the result once
-    async def stream_generator():
-        yield result
-
-    # Return the generator for StreamingResponse
-    return StreamingResponse(stream_generator())
+    """
+    Waits for the full response and streams it in chunks as plain text.
+    """
+    try:
+        response_text = invoke(session_id, locale, product, nl_query, is_expert_answering)
+        chunk_size = 100
+        async def stream_generator():
+            for i in range(0, len(response_text), chunk_size):
+                yield response_text[i:i+chunk_size]
+                await asyncio.sleep(0.05)
+        return StreamingResponse(stream_generator(), media_type="text/plain")
+    except Exception as e:
+        utils.logger.critical("Error in invoke_stream: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/invoke/", response_model=str, response_class=PlainTextResponse)
