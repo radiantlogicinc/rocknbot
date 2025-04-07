@@ -87,7 +87,7 @@ async def get_ans(query, thread_id, msg_id, product, is_expert_answering):
                 "nl_query": query,
                 "is_expert_answering": is_expert_answering,
             },
-            timeout=60,
+            timeout=90,  # Increased timeout to 90 seconds
         )
     except Exception as exc:  # pylint: disable=broad-except
         logger.error(f"An error occurred during the asynchronous call get_ans: {exc}")
