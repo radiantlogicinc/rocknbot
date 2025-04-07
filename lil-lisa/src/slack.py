@@ -299,15 +299,14 @@ async def get_golden_qa_pairs(ack, body, say):
     try:
         # Call the get_golden_qa_pairs API
         full_url = f"{BASE_URL}/get_golden_qa_pairs/"
-        response = requests.post(
+        if response := requests.post(
             full_url,
             params={
                 "product": product,  # pylint: disable=missing-timeout
                 "encrypted_key": ENCRYPTED_AUTHENTICATION_KEY,
             },
             timeout=60,
-        )
-        if response:
+        ):
             await app.client.files_upload_v2(
                 file=response.content,
                 filename="qa_pairs.md",
@@ -325,7 +324,7 @@ async def get_golden_qa_pairs(ack, body, say):
 
 
 @app.command("/update_golden_qa_pairs")
-async def update_golden_qa_pairs(ack, body, say):  # pylint: disable=too-many-locals
+async def update_golden_qa_pairs(ack, body, say):    # pylint: disable=too-many-locals
     """
     Slack command to replace the existing golden qa pairs in the database.
 
@@ -361,15 +360,14 @@ async def update_golden_qa_pairs(ack, body, say):  # pylint: disable=too-many-lo
     try:
         # Call the update_golden_qa_pairs API
         full_url = f"{BASE_URL}/update_golden_qa_pairs/"
-        response = requests.post(
+        if response := requests.post(
             full_url,
             params={
                 "product": product,  # pylint: disable=missing-timeout
                 "encrypted_key": ENCRYPTED_AUTHENTICATION_KEY,
             },
             timeout=60,
-        )
-        if response:
+        ):
             _ = await say(channel=dm_channel_id, text=response.text)
         else:
             error_msg = f"Call to lil-lisa server {full_url} has failed."
@@ -421,16 +419,15 @@ async def get_conversations(ack, body, say):
     try:
         # Call the get_conversations API
         full_url = f"{BASE_URL}/get_conversations/"
-        response = requests.post(
+        if response := requests.post(
             full_url,
             params={
                 "product": product,  # pylint: disable=missing-timeout
                 "endorsed_by": endorsed_by,
-                "encrypted_key": ENCRYPTED_AUTHENTICATION_KEY
+                "encrypted_key": ENCRYPTED_AUTHENTICATION_KEY,
             },
-            timeout=60,
-        )
-        if response:
+            timeout=180,
+        ):
             await app.client.files_upload_v2(
                 file=response.content,
                 filename="conversations.zip",
@@ -491,12 +488,11 @@ async def rebuild_docs(ack, body, say):
     try:
         # Call the rebuild_docs API
         full_url = f"{BASE_URL}/rebuild_docs/"
-        response = requests.post(
+        if response := requests.post(
             full_url,
             params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
             timeout=2700,
-        )
-        if response:
+        ):
             _ = await say(channel=dm_channel_id, text=response.text)
         else:
             error_msg = f"Call to lil-lisa server {full_url} has failed."
