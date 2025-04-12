@@ -139,14 +139,34 @@ class LiteLLM(LLM):
         async for resp in self.astream_chat(messages, **kwargs):
             yield resp.message.content
 
+class StreamingReActAgent(ReActAgent):
+    def iter_steps(self, prompt: str):
+        task = self.create_task(prompt)
+        while True:
+            step_output = self.run_step(task.task_id)
+            yield step_output
+            if step_output.is_last:
+                break
 
+    def stream_chat(self, prompt: str):
+        try:
+            for step_output in self.iter_steps(prompt):
+                step = step_output.output
+                if not step_output.is_last:
+                    yield "cot", f"{step.response}"
+                else:
+                    yield "ans", f"{step.response}"
+                    return
+        except Exception as e:
+            utils.logger.error(f"Stream error: {str(e)}")
+            yield "ans", f"ANS: Error: Unable to process request due to {str(e)}. Please try again."
 # -----------------------------------------------------------------------------
 # Application Lifecycle Management
 # -----------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Manages startup and shutdown tasks for the FastAPI application."""
-    global REACT_AGENT_PROMPT, LANCEDB_FOLDERPATH, AUTHENTICATION_KEY, DOCUMENTATION_FOLDERPATH, QA_PAIRS_GITHUB_REPO_URL, QA_PAIRS_FOLDERPATH, DOCUMENTATION_NEW_VERSIONS, DOCUMENTATION_EOC_VERSIONS, DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS, DOCUMENTATION_IA_PRODUCT_VERSIONS, DOCUMENTATION_IA_SELFMANAGED_VERSIONS, MAX_ITERATIONS
+    global REACT_AGENT_PROMPT, LANCEDB_FOLDERPATH, AUTHENTICATION_KEY, DOCUMENTATION_FOLDERPATH, QA_PAIRS_GITHUB_REPO_URL, QA_PAIRS_FOLDERPATH, DOCUMENTATION_NEW_VERSIONS, DOCUMENTATION_EOC_VERSIONS, DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS, DOCUMENTATION_IA_PRODUCT_VERSIONS, DOCUMENTATION_IA_SELFMANAGED_VERSIONS, MAX_ITERATIONS, LLM_MODEL
 
     lillisa_server_env = utils.LILLISA_SERVER_ENV_DICT
 
@@ -268,23 +288,159 @@ def get_llsc(
 # -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
-@app.post("/invoke_stream/", response_class=StreamingResponse)
-async def invoke_stream(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool):
+@app.post("/invoke_stream_html/", response_class=StreamingResponse)
+async def invoke_stream_html(
+    session_id: str,
+    locale: str,
+    product: str,
+    nl_query: str,
+    is_expert_answering: bool
+):
     """
-    Waits for the full response and streams it in chunks as plain text.
-    """
-    try:
-        response_text = invoke(session_id, locale, product, nl_query, is_expert_answering)
-        chunk_size = 100
-        async def stream_generator():
-            for i in range(0, len(response_text), chunk_size):
-                yield response_text[i:i+chunk_size]
-                await asyncio.sleep(0.05)
-        return StreamingResponse(stream_generator(), media_type="text/plain")
-    except Exception as e:
-        utils.logger.critical("Error in invoke_stream: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+    Processes a natural language query ans stream the reasoning and final answer.
 
+    Args:
+        session_id (str): Unique identifier for the session.
+        locale (str): Locale of the conversation.
+        product (str): Product ("IDA" or "IDDM").
+        nl_query (str): Natural language query or expert answer.
+        is_expert_answering (bool): Indicates if an expert is providing the answer.
+
+    Returns:
+        str: Response from AI or expert answer.
+
+    Raises:
+        HTTPException: On internal errors or invalid input.
+    """
+    llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
+    if is_expert_answering:
+        llsc.add_to_conversation_history("Expert", nl_query)
+        async def expert_gen():
+            formatted_q = nl_query.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            formatted_q = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", formatted_q)
+            formatted_q = re.sub(r"(https?://[^\s'\"<]+)", r'<a href="\1" target="_blank">\1</a>', formatted_q)
+            formatted_q = formatted_q.replace("\n", "<br>")
+            yield f"ANS: {formatted_q}\n"
+        return StreamingResponse(expert_gen(), media_type="text/html")
+    # Build agent
+    conversation_history = "\n".join(f"{p}: {m}" for p, m in llsc.conversation_history)
+    tools = [
+        FunctionTool.from_defaults(fn=improve_query),
+        FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
+        FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
+    ]
+    llm = LiteLLM(model=LLM_MODEL)
+    react_agent = StreamingReActAgent.from_tools(
+        tools=tools,
+        llm=llm,
+        verbose=True,
+        max_iterations=MAX_ITERATIONS,
+    )
+    prompt = (
+        REACT_AGENT_PROMPT
+        .replace("<PRODUCT>", product)
+        .replace("<CONVERSATION_HISTORY>", conversation_history)
+        .replace("<QUERY>", nl_query)
+    )
+
+    llsc.add_to_conversation_history("User", nl_query)
+
+    def chunk_text(text: str, max_length: int) -> list[str]:
+        """
+        Splits `text` into a list of chunks where each chunk (except possibly
+        single very long words) is no longer than max_length characters, without
+        splitting words.
+        """
+        words = text.split()
+        chunks = []
+        current_chunk = ""
+        for word in words:
+            # If the current word itself is longer than max_length,
+            # yield the current_chunk (if any) and then yield the full word.
+            if len(word) > max_length:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = ""
+                chunks.append(word)
+                continue
+            # If adding the word would exceed max_length, finish the current chunk.
+            if len(current_chunk) + len(word) + 1 > max_length:
+                chunks.append(current_chunk.strip())
+                current_chunk = word + " "
+            else:
+                current_chunk += word + " "
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        return chunks
+
+    def html_chunk_text(html_text: str) -> list[str]:
+        """
+        Splits an HTML string into a list of substrings immediately before each
+        <br> tag, keeping the tag with the following chunk.
+        
+        Args:
+            html_text: The input HTML string.
+            
+        Returns:
+            A list of strings split immediately before <br> tags.
+        """
+        br_pattern = r'<br\s*/?>'
+        matches = list(re.finditer(br_pattern, html_text, flags=re.IGNORECASE))
+        chunks = []
+        
+        # Handle the case with no <br> tags
+        if not matches:
+            return [html_text] if html_text else []
+        
+        # Process first chunk (before first <br>)
+        first_match = matches[0]
+        if first_match.start() > 0:
+            chunks.append(html_text[:first_match.start()])
+        
+        # Process chunks at each <br> tag
+        for i in range(len(matches)):
+            current_match = matches[i]
+            current_br = html_text[current_match.start():current_match.end()]
+            
+            # If this is the last <br> tag
+            if i == len(matches) - 1:
+                chunks.append(current_br + html_text[current_match.end():])
+            else:
+                next_match = matches[i + 1]
+                chunks.append(current_br + html_text[current_match.end():next_match.start()])
+        
+        return chunks
+
+    async def streamer() -> AsyncGenerator[str, None]:
+        def format_to_html(t: str) -> str:
+            # Convert markdown bold to HTML strong tag.
+            t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+            # Replace URLs with an anchor tag that has inline styling.
+            t = re.sub(
+                r"(https?://[^\s'\"<]+)",
+                r'<a href="\1" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
+                t
+            )
+        
+            return t.replace("\n", "<br>")
+
+
+
+        for phase, text in react_agent.stream_chat(prompt):
+            if phase == "cot":
+                chunks = chunk_text(text, 50)  # 50-character chunks for CoT
+                for chunk in chunks:
+                    yield f"COT: {format_to_html(chunk)}\n"
+                    await asyncio.sleep(0.5)
+            else:  # phase == "ans"
+                llsc.add_to_conversation_history("Assistant", text)
+                html_answer = format_to_html(text)
+                chunks = html_chunk_text(html_answer)
+                for chunk in chunks:
+                    yield f"ANS: {chunk}\n"
+                    await asyncio.sleep(0.05)
+
+    return StreamingResponse(streamer(), media_type="text/html")
 
 @app.post("/invoke/", response_model=str, response_class=PlainTextResponse)
 def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool) -> str:
@@ -667,7 +823,6 @@ async def rebuild_docs(encrypted_key: str) -> str:
                                 node.excluded_llm_metadata_keys = excluded_metadata_keys
                                 node.excluded_embed_metadata_keys = excluded_metadata_keys
                             all_nodes.extend(nodes)
-
                 enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
                 new_nodes = []
                 for node in all_nodes:
@@ -702,7 +857,6 @@ async def rebuild_docs(encrypted_key: str) -> str:
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    """Returns a status page with a streaming example."""
     return """
     <html>
         <head>
@@ -710,30 +864,6 @@ def home():
         </head>
         <body>
             <h1>LIL LISA SERVER is up and running!</h1>
-            <div id="chat-output" style="border: 1px solid #ccc; padding: 10px; height: 300px; overflow: auto;"></div>
-            <script>
-                fetch("http://127.0.0.1:8080/invoke_stream/?session_id=session1&locale=en&product=IDDM&nl_query=Please+provide+streaming+output+details+for+here&is_expert_answering=false")
-                    .then(response => {
-                        if (!response.body) {
-                          throw new Error("ReadableStream not supported in this browser.");
-                        }
-                        const reader = response.body.getReader();
-                        const decoder = new TextDecoder();
-                        function readStream() {
-                            reader.read().then(({ done, value }) => {
-                                if (done) {
-                                    console.log("Stream complete");
-                                    return;
-                                }
-                                const chunk = decoder.decode(value, { stream: true });
-                                document.getElementById("chat-output").innerHTML += chunk;
-                                readStream();
-                            }).catch(error => console.error("Error reading stream:", error));
-                        }
-                        readStream();
-                    })
-                    .catch(error => console.error("Streaming error:", error));
-            </script>
             <p>For usage instructions, see the <a href='./docs'>Swagger API</a></p>
         </body>
     </html>
