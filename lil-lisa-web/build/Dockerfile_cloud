@@ -13,8 +13,9 @@ COPY build/environment.yml /app/
 # Create the conda environment using the new environment file (which now includes gunicorn)
 RUN conda env create -f environment.yml
 
-# Copy application code and environment variable file from the root directory
+# Copy application code, templates and environment variable file from the root directory
 COPY main.py /app/
+COPY templates/ /app/templates/
 COPY ./build/lil-lisa-web.env /app/
 
 # Ensure logs are unbuffered (important for production logging)

@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAG Pipeline Chatbot</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /* Global Styles */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Montserrat', sans-serif;
+            background: linear-gradient(135deg, #f0f4f8, #d9e2ec);
+            color: #334e68;
+        }
+
+        header.header {
+            background: #1d2d44;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 30px;
+            height: 70px;
+        }
+
+        nav.nav {
+            display: flex;
+            align-items: center;
+        }
+
+        nav.nav img.logo-image {
+            height: 60px;
+            width: auto;
+            margin-right: 25px;
+        }
+
+        nav.nav a {
+            color: #ffffff;
+            margin-right: 25px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.3s;
+        }
+
+        nav.nav a:hover {
+            color: #ffc107;
+        }
+
+        button.request-trial {
+            background: #ffc107;
+            border: none;
+            border-radius: 30px;
+            padding: 10px 25px;
+            font-weight: 700;
+            color: #1d2d44;
+            transition: background 0.3s;
+        }
+
+        button.request-trial:hover {
+            background: #e0a800;
+        }
+
+        .main-content {
+            max-width: 1200px;
+            margin: 40px auto;
+            padding: 20px;
+            text-align: center;
+        }
+
+        section.hero h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 20px;
+            color: #1d2d44;
+        }
+
+        section.hero p {
+            font-size: 1.2rem;
+            line-height: 1.6;
+            margin-bottom: 40px;
+            color: #334e68;
+        }
+
+        #chrome-container {
+            transition: all 0.3s ease-in-out;
+            background: #ffffff;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            border-radius: 15px;
+            padding: 40px;
+            margin-bottom: 40px;
+        }
+
+        .chrome-tabs {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .chrome-tab {
+            position: relative;
+            background: #e9ecef;
+            color: #495057;
+            margin: 10px;
+            padding: 10px 20px;
+            border-radius: 30px;
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s, transform 0.2s;
+            font-size: 1rem;
+        }
+
+        .chrome-tab.active {
+            background: #007bff;
+            color: #fff;
+            transform: translateY(-3px);
+        }
+
+        .chrome-tab:hover {
+            background: #ced4da;
+        }
+
+        #global-language-container {
+            margin-left: auto;
+            margin-right: 20px;
+            display: flex;
+            align-items: center;
+        }
+
+        #global-language-container label {
+            margin-left: 10px;
+            margin: 0;
+            font-size: 1rem;
+            color: #495057;
+        }
+
+        #start-new-chat-button {
+            background: #17a2b8;
+            border: none;
+            border-radius: 30px;
+            padding: 10px 20px;
+            font-weight: 600;
+            color: #fff;
+            cursor: pointer;
+            transition: background 0.3s, transform 0.2s;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: none;
+            margin-left: 15px;
+        }
+
+        #start-new-chat-button:hover {
+            background: #0056b3;
+            transform: translateY(-2px);
+        }
+
+        .grok-container {
+            background: #ffffff;
+            border-radius: 15px;
+            padding: 25px;
+            position: relative;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            text-align: left;
+        }
+
+        .grok-messages {
+            margin-bottom: 10px;
+        }
+
+        .grok-message {
+            margin: 12px 0;
+            padding: 15px 20px;
+            border-radius: 15px;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+
+        .user-message {
+            background: #f1f3f5;
+            text-align: right;
+            font-size: 1rem;
+
+        }
+
+        .assistant-message {
+            background: #e9ecef;
+            text-align: left;
+            border-left: 4px solid #17a2b8;
+            font-size: 1rem;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 8px;
+        }
+
+        .description,
+        .cot {
+            background: #f0f0f0;
+            font-size: 0.9em;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+
+        .cot {
+            background: #e0e0e0;
+            font-size: 0.6em;
+            color: #686868;
+            font-family: 'Courier New', monospace;
+            opacity: 0.85;
+        }
+
+        .system-message {
+            background: #fff3cd;
+            text-align: center;
+            font-style: italic;
+        }
+
+        #common-input-area {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 85%;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        #common-input-area input[type="text"] {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #ced4da;
+            border-radius: 50px;
+            outline: none;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+
+        #common-input-area input[type="text"]:focus {
+            border-color: #17a2b8;
+        }
+
+        #common-input-area button {
+            padding: 15px 25px;
+            background: #17a2b8;
+            color: #fff;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.3s;
+        }
+
+        #common-input-area button:hover {
+            background: #138496;
+        }
+
+        .loading-text {
+            margin-top: 5px;
+            font-size: 0.9em;
+        }
+
+        .feedback-container {
+            text-align: right;
+            margin-top: 5px;
+        }
+
+        .thumb-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 1.2em;
+            margin-left: 5px;
+        }
+
+        .feedback-popup {
+            position: fixed;
+            bottom: 80px;
+            right: 20px;
+            background: #333;
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 5px;
+            opacity: 0.9;
+            font-size: 0.9em;
+            z-index: 2000;
+        }
+
+        #doc-links-container {
+            margin: 20px 0;
+            font-size: 1rem;
+            text-align: left;
+        }
+
+        .checkbox-container {
+            position: relative;
+            display: inline-block;
+            margin-left: 10px;
+        }
+
+        .checkbox-container .tooltip {
+            visibility: hidden;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            text-align: center;
+            border-radius: 4px;
+            padding: 5px;
+            position: absolute;
+            bottom: 125%;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out 0.5s;
+            white-space: nowrap;
+            z-index: 1000;
+        }
+
+        .checkbox-container:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        .checkbox-container input[type="checkbox"] {
+            transform: scale(1.2);
+            vertical-align: middle;
+            margin: 0;
+            cursor: pointer;
+        }
+
+        #chat-area {
+            display: none;
+        }
+
+        /* Banner styles for continuous scrolling */
+        #banner {
+            position: relative;
+            width: 100%;
+            background: #ffcc00;
+            color: #000;
+            font-size: 14px;
+            padding: 5px;
+            margin-bottom: 10px;
+            z-index: 1001;
+        }
+    </style>
+</head>
+
+<body>
+    <header class="header">
+        <nav class="nav">
+            <img src="https://raw.githubusercontent.com/Vezingg/rocknbot/main/LilLisa_Server/src/RadiantLogic.png"
+                alt="Radiant Logic Logo" class="logo-image">
+            <a href="https://marketplace.radiantlogic.com/" target="_blank">Marketplace</a>
+            <a href="https://support.radiantlogic.com/hc/en-us" target="_blank">Support</a>
+        </nav>
+        <button class="request-trial"><a href="https://www.radiantlogic.com/request-a-trial/" target="_blank"
+                style="text-decoration: none; color: #1d2d44;">Request Trial</a></button>
+    </header>
+    <div class="main-content">
+        <section class="hero">
+            <h1>Welcome to Radiant Logic Documentation Assistant</h1>
+            <p>
+                Ask your product-related questions below. Answers are drawn from our product documentation and include
+                citations. Provide the product version for version-specific responses.
+            </p>
+        </section>
+        <div id="chrome-container">
+            <div class="chrome-tabs" id="product-tabs">
+                <button class="chrome-tab" id="tab-ida" onclick="selectProduct('IDA')">Identity Analytics</button>
+                <button class="chrome-tab" id="tab-iddm" onclick="selectProduct('IDDM')">Identity Data
+                    Management</button>
+                <button class="chrome-tab" id="tab-eoc" onclick="selectProduct('EOC')">Environment Operations
+                    Center</button>
+                <div id="global-language-container">
+                    <label>
+                        <input type="checkbox" id="global-language-checkbox"
+                            onchange="handleGlobalLanguageChange(this)"> French
+                    </label>
+                </div>
+                <button id="start-new-chat-button" onclick="newChat(currentProduct)" style="display: none;">Start New
+                    Chat</button>
+            </div>
+            <div id="chat-area"></div>
+            <div id="common-input-area">
+                <input type="text" id="query-input" placeholder="Type Your Question Here..." autocomplete="off">
+                <button id="send-btn" onclick="sendQuery()">Send Query</button>
+                <div class="checkbox-container" id="start-new-chat-checkbox-container">
+                    <input type="checkbox" id="start-new-chat-checkbox">
+                    <span class="tooltip">Start New Chat</span>
+                </div>
+            </div>
+            <!-- Scroll-to-bottom button -->
+            <button id="scroll-to-bottom-btn"
+                style="display: none; position: fixed; bottom: 80px; right: 20px; z-index: 1000; background: #17a2b8; color: #fff; border: none; border-radius: 50%; width: 40px; height: 40px; font-size: 20px; cursor: pointer;">⬇️</button>
+            <div id="doc-links-container"></div>
+        </div>
+    </div>
+    <script>
+        let autoScrollEnabled = true;
+        let currentProduct = null;
+        const sessions = {
+            "IDA": { sessionId: null, firstQuerySent: false },
+            "IDDM": { sessionId: null, firstQuerySent: false },
+            "EOC": { sessionId: null, firstQuerySent: false }
+        };
+        const chatTemplates = {
+            "IDA": `<div id="chat-IDA" class="grok-container">
+                <div id="messages-IDA" class="grok-messages"></div>
+              </div>`,
+            "IDDM": `<div id="chat-IDDM" class="grok-container">
+                <div id="messages-IDDM" class="grok-messages"></div>
+              </div>`,
+            "EOC": `<div class="static-info">
+                <p>The Environment Operations Center does not support chatbot functionality yet. Please refer to the documentation below for details.</p>
+              </div>`
+        };
+
+        // Generate unique session IDs client-side
+        function generateUniqueSessionId() {
+            return crypto.randomUUID();
+        }
+
+        // Update the progress container with a spinner and the specified text.
+        function updateProgressText(div, text) {
+            div.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></span> ' + text;
+        }
+
+        function startProgressIndicator(div) {
+            updateProgressText(div, "Improving query");
+            return {};
+        }
+
+        // Format raw text into HTML client-side
+        function formatResponse(rawText) {
+            const lines = rawText.split("\\n");
+            let html = "";
+            lines.forEach(line => {
+                if (line.startsWith("## ")) {
+                    const heading = line.slice(3).trim();
+                    html += `<h2>${heading}</h2>`;
+                } else if (line.startsWith("### ")) {
+                    const heading = line.slice(4).trim();
+                    html += `<h3>${heading}</h3>`;
+                } else {
+                    const match = line.match(/^(\s+)/);
+                    let leadingSpaces = "";
+                    if (match) {
+                        const spaceCount = match[1].length;
+                        leadingSpaces = " ".repeat(spaceCount);
+                        line = line.slice(spaceCount);
+                    }
+                    line = line.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+                    line = line.replace(
+                        /(https?:\/\/[^\s"'<]+)/g,
+                        '<a href="$1" target="_blank">$1</a>'
+                    );
+                    html += leadingSpaces + line + "<br>";
+                }
+            });
+            return `<div>${html}</div>`;
+        }
+
+        // Helper function for delay in ms
+        function delay(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+        async function streamTextNode(targetElement, textNode, delayMs) {
+            const words = textNode.textContent.split(/\s+/);
+            for (let i = 0; i < words.length; i++) {
+                if (words[i]) {
+                    targetElement.appendChild(document.createTextNode(words[i]));
+                    if (i < words.length - 1) {
+                        targetElement.appendChild(document.createTextNode(' '));
+                    }
+                    await delay(delayMs);
+                }
+            }
+        }
+
+        async function streamContent(targetElement, content, delayMs) {
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = content;
+            for (const node of tempDiv.childNodes) {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    targetElement.appendChild(node.cloneNode(true));
+                    await delay(delayMs);
+                } else if (node.nodeType === Node.TEXT_NODE) {
+                    await streamTextNode(targetElement, node, delayMs);
+                }
+            }
+        }
+
+        async function streamTextSmoothly(targetElement, text, chunkDelay) {
+            const chunks = text.split(/(<[^>]+>)/).flatMap(chunk =>
+                chunk.match(/<[^>]+>/) ? [chunk] : chunk.split(/\s+/)
+            ).filter(chunk => chunk.length > 0);
+            for (let chunk of chunks) {
+                targetElement.insertAdjacentHTML('beforeend', chunk + (chunk.match(/<[^>]+>/) ? '' : ' '));
+                await delay(chunkDelay);
+            }
+        }
+
+        function streamToUI(reader) {
+            const decoder = new TextDecoder();
+            const uniqueId = createUniqueId("query");
+            const messagesDiv = document.getElementById("messages-" + currentProduct);
+
+            // Create the description container for the progress indicator.
+            const descriptionDiv = document.createElement("div");
+            descriptionDiv.id = "description-container-" + uniqueId;
+            descriptionDiv.className = "assistant-message description";
+            messagesDiv.appendChild(descriptionDiv);
+
+            // Start the progress indicator sequence.
+            const progressTimers = startProgressIndicator(descriptionDiv);
+            // Create the CoT container.
+            const cotDiv = document.createElement("div");
+            cotDiv.id = "cot-container-" + uniqueId;
+            cotDiv.className = "assistant-message cot";
+            cotDiv.style.display = "none";
+            messagesDiv.appendChild(cotDiv);
+
+            // Create the final answer container (initially hidden).
+            const answerDiv = document.createElement("div");
+            answerDiv.id = "answer-container-" + uniqueId;
+            answerDiv.className = "assistant-message";
+            answerDiv.style.display = "none";
+            messagesDiv.appendChild(answerDiv);
+
+            async function pump() {
+                const { done, value } = await reader.read();
+                if (done) return;
+                const text = decoder.decode(value, { stream: true });
+                const chunks = text.split(/(?=COT:|ANS:)/);
+                for (const chunk of chunks) {
+                    if (chunk.startsWith("COT:")) {
+                        // Stream CoT content normally.
+                        const cotContent = chunk.slice(4);
+                        await streamContent(cotDiv, cotContent, 100);
+                    } else if (chunk.startsWith("ANS:")) {
+                        // When final answer arrives:
+                        // Clear progress timers and remove progress elements.
+                        clearTimeout(progressTimers.timer1);
+                        clearTimeout(progressTimers.timer2);
+                        if (descriptionDiv) descriptionDiv.remove();
+                        cotDiv.style.display = "none";
+                        answerDiv.style.display = "block";
+                        await streamTextSmoothly(answerDiv, chunk.slice(4), 50);
+                    }
+                }
+                if (autoScrollEnabled) {
+                    window.scrollTo(0, document.body.scrollHeight);
+                }
+                pump();
+            }
+            pump();
+        }
+
+        // Function to create a unique ID string using timestamp and random number.
+        function createUniqueId(prefix) {
+            return prefix + '-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+        }
+
+        function appendMessage(content, sender) {
+            if (!currentProduct) return;
+            let messagesDiv = document.getElementById('messages-' + currentProduct);
+            if (!document.getElementById('chat-' + currentProduct)) {
+                ensureChatContainer();
+                messagesDiv = document.getElementById('messages-' + currentProduct);
+            }
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('grok-message');
+            if (sender === 'user') {
+                msgDiv.classList.add('user-message');
+                msgDiv.innerText = content;
+                if (!sessions[currentProduct].firstQuerySent) {
+                    sessions[currentProduct].firstQuerySent = true;
+                    const startNewChatBtn = document.getElementById('start-new-chat-button');
+                    if (startNewChatBtn) {
+                        startNewChatBtn.style.display = "inline-block";
+                    }
+                }
+            } else if (sender === 'assistant') {
+                msgDiv.classList.add('assistant-message');
+                msgDiv.innerHTML = content;
+                if (!content.startsWith("[Error")) {
+                    const feedbackDiv = document.createElement('div');
+                    feedbackDiv.classList.add('feedback-container');
+                    feedbackDiv.innerHTML = '<button class="thumb-btn up">👍</button>' +
+                        '<button class="thumb-btn down">👎</button>';
+                    msgDiv.appendChild(feedbackDiv);
+                    const upBtn = feedbackDiv.querySelector('.thumb-btn.up');
+                    const downBtn = feedbackDiv.querySelector('.thumb-btn.down');
+                    upBtn.addEventListener('click', function () {
+                        if (feedbackDiv.classList.contains("locked")) return;
+                        feedbackDiv.classList.add("locked");
+                        upBtn.disabled = true;
+                        downBtn.disabled = true;
+                        submitFeedback('thumbsup');
+                    });
+                    downBtn.addEventListener('click', function () {
+                        if (feedbackDiv.classList.contains("locked")) return;
+                        feedbackDiv.classList.add("locked");
+                        downBtn.disabled = true;
+                        upBtn.disabled = true;
+                        submitFeedback('thumbsdown');
+                    });
+                }
+            } else {
+                msgDiv.classList.add('system-message');
+                msgDiv.innerText = content;
+            }
+            messagesDiv.appendChild(msgDiv);
+            messagesDiv.scrollTo({ top: messagesDiv.scrollHeight, behavior: 'smooth' });
+            if (autoScrollEnabled) {
+                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            }
+        }
+
+        function ensureChatContainer() {
+            const chatArea = document.getElementById('chat-area');
+            if (!document.getElementById('chat-' + currentProduct)) {
+                chatArea.innerHTML = chatTemplates[currentProduct];
+            }
+            chatArea.style.display = "block";
+        }
+
+        function appendLoadingIndicator() {
+            if (!currentProduct) return;
+            ensureChatContainer();
+            const messagesDiv = document.getElementById('messages-' + currentProduct);
+            if (!messagesDiv) return;
+            const loader = document.createElement('div');
+            loader.classList.add('grok-message', 'assistant-message');
+            loader.id = 'loading-indicator';
+            loader.innerHTML = `<div class="spinner-border text-secondary spinner-border-sm" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                          </div>
+                          <div class="loading-text">This may take up to a minute.</div>`;
+            messagesDiv.appendChild(loader);
+            messagesDiv.scrollTo({ top: messagesDiv.scrollHeight, behavior: 'smooth' });
+        }
+
+        function removeLoadingIndicator() {
+            const loader = document.getElementById('loading-indicator');
+            if (loader) loader.remove();
+        }
+
+        async function submitFeedback(type) {
+            try {
+                const response = await fetch('/api/' + type, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessions[currentProduct].sessionId })
+                });
+                await response.json();
+            } catch (err) {
+                console.error('Feedback submission error:', err);
+            }
+            showFeedbackPopup();
+        }
+
+        function showFeedbackPopup() {
+            const popup = document.createElement('div');
+            popup.classList.add('feedback-popup');
+            popup.innerText = 'Thank you for your feedback!';
+            document.body.appendChild(popup);
+            setTimeout(() => popup.remove(), 3000);
+        }
+
+        function handleGlobalLanguageChange(checkboxElem) {
+            setCookie("languagePreference", checkboxElem.checked ? "fr-FR" : "en-US", 7);
+        }
+
+        function setCookie(name, value, days) {
+            const d = new Date();
+            d.setTime(d.getTime() + (days * 24 * 60 * 60 * 1000));
+            let expires = "expires=" + d.toUTCString();
+            document.cookie = name + "=" + value + ";" + expires + ";path=/";
+        }
+
+        function getCookie(name) {
+            let cname = name + "=";
+            let decodedCookie = decodeURIComponent(document.cookie);
+            let ca = decodedCookie.split(';');
+            for (let i = 0; i < ca.length; i++) {
+                let c = ca[i].trim();
+                if (c.indexOf(cname) == 0) {
+                    return c.substring(cname.length, c.length);
+                }
+            }
+            return "";
+        }
+
+        window.onload = function () {
+            const langPref = getCookie("languagePreference");
+            const globalCheckbox = document.getElementById('global-language-checkbox');
+            if (globalCheckbox) {
+                globalCheckbox.checked = (langPref === "fr-FR");
+            }
+            selectProduct('IDDM');
+            const queryInput = document.getElementById('query-input');
+            if (queryInput) {
+                queryInput.addEventListener('keypress', function (e) {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        sendQuery();
+                    }
+                });
+            }
+            document.getElementById('scroll-to-bottom-btn').addEventListener('click', function () {
+                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            });
+        };
+
+        async function sendQuery() {
+            if (currentProduct === "EOC") {
+                return;
+            }
+            if (!currentProduct) return;
+
+            autoScrollEnabled = true;
+            const newChatCheckbox = document.getElementById('start-new-chat-checkbox');
+            if (newChatCheckbox && newChatCheckbox.checked) {
+                newChat(currentProduct);
+                newChatCheckbox.checked = false;
+            }
+            const queryInput = document.getElementById('query-input');
+            if (!queryInput) return;
+            const userQuery = queryInput.value.trim();
+            if (!userQuery) return;
+
+            appendMessage(userQuery, 'user');
+            queryInput.value = '';
+            removeLoadingIndicator();
+
+            const uniqueId = createUniqueId("query");
+            const messagesDiv = document.getElementById("messages-" + currentProduct);
+
+            // Create the description container for progress indicator.
+            const descriptionDiv = document.createElement("div");
+            descriptionDiv.id = "description-container-" + uniqueId;
+            descriptionDiv.className = "assistant-message description";
+            messagesDiv.appendChild(descriptionDiv);
+
+            // Start the progress indicator sequence.
+            const progressTimers = startProgressIndicator(descriptionDiv);
+
+            // Create the CoT container.
+            const cotDiv = document.createElement("div");
+            cotDiv.id = "cot-container-" + uniqueId;
+            cotDiv.className = "assistant-message cot";
+            cotDiv.style.display = "none";  // Initially hidden
+            messagesDiv.appendChild(cotDiv);
+
+            // Create the final answer container.
+            const answerDiv = document.createElement("div");
+            answerDiv.id = "answer-container-" + uniqueId;
+            answerDiv.className = "assistant-message";
+            answerDiv.style.display = "none";
+            messagesDiv.appendChild(answerDiv);
+
+            let locale = 'en-US';
+            const langCheckbox = document.getElementById('global-language-checkbox');
+            if (langCheckbox && langCheckbox.checked) {
+                locale = 'fr-FR';
+            }
+
+            if (!sessions[currentProduct].sessionId) {
+                sessions[currentProduct].sessionId = generateUniqueSessionId();
+            }
+
+            try {
+                const response = await fetch('/api/chat_cot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessions[currentProduct].sessionId,
+                        product: currentProduct,
+                        query: userQuery,
+                        locale: locale,
+                        is_expert: false
+                    })
+                });
+
+                if (!response.ok) {
+                    if (descriptionDiv) descriptionDiv.remove();
+                    appendMessage(`[Error] ${await response.text()}`, 'assistant');
+                    return;
+                }
+
+                const reader = response.body.getReader();
+
+                // Process the stream. When an "ANS:" chunk arrives, clear timers and remove progress UI.
+                processStreamData(reader, descriptionDiv, cotDiv, answerDiv);
+
+                if (!sessions[currentProduct].firstQuerySent) {
+                    sessions[currentProduct].firstQuerySent = true;
+                    const startNewChatBtn = document.getElementById('start-new-chat-button');
+                    if (startNewChatBtn) {
+                        startNewChatBtn.style.display = "inline-block";
+                    }
+                }
+            } catch (err) {
+                console.error('Error:', err);
+                if (descriptionDiv) descriptionDiv.remove();
+                appendMessage("[Error: Failed to get response]", 'assistant');
+            }
+        }
+
+        async function processStreamData(reader, descriptionDiv, cotDiv, answerDiv) {
+            const decoder = new TextDecoder();
+            let cotStarted = false;
+            cotDiv.innerHTML = "";
+
+            async function pump() {
+                const { done, value } = await reader.read();
+                if (done) {
+                    // Add feedback buttons once streaming is complete
+                    if (answerDiv.style.display === "block") {
+                        const feedbackDiv = document.createElement('div');
+                        feedbackDiv.classList.add('feedback-container');
+                        feedbackDiv.innerHTML = '<button class="thumb-btn up">👍</button>' +
+                            '<button class="thumb-btn down">👎</button>';
+                        answerDiv.appendChild(feedbackDiv);
+
+                        const upBtn = feedbackDiv.querySelector('.thumb-btn.up');
+                        const downBtn = feedbackDiv.querySelector('.thumb-btn.down');
+
+                        upBtn.addEventListener('click', function () {
+                            if (feedbackDiv.classList.contains("locked")) return;
+                            feedbackDiv.classList.add("locked");
+                            upBtn.disabled = true;
+                            downBtn.disabled = true;
+                            submitFeedback('thumbsup');
+                        });
+
+                        downBtn.addEventListener('click', function () {
+                            if (feedbackDiv.classList.contains("locked")) return;
+                            feedbackDiv.classList.add("locked");
+                            downBtn.disabled = true;
+                            upBtn.disabled = true;
+                            submitFeedback('thumbsdown');
+                        });
+                    }
+                    return;
+                }
+
+                const text = decoder.decode(value, { stream: true });
+                const chunks = text.split(/(?=COT:|ANS:)/);
+                for (const chunk of chunks) {
+                    if (chunk.startsWith("COT:")) {
+                        if (!cotStarted) {
+                            cotStarted = true;
+                            // Change description text when COT starts streaming
+                            if (descriptionDiv) {
+                                updateProgressText(descriptionDiv, "Preparing final answer");
+                            }
+                            cotDiv.style.display = "block";
+                        }
+                        const cotContent = chunk.slice(4);
+                        await streamContent(cotDiv, cotContent, 100);
+                    } else if (chunk.startsWith("ANS:")) {
+                        if (descriptionDiv) {
+                            descriptionDiv.remove();
+                        }
+                        if (cotDiv) {
+                            cotDiv.style.display = "none";
+                        }
+                        answerDiv.style.display = "block";
+                        await streamContent(answerDiv, chunk.slice(4), 50);
+                    }
+                }
+                if (autoScrollEnabled) {
+                    window.scrollTo(0, document.body.scrollHeight);
+                }
+                pump();
+            }
+            pump();
+        }
+
+
+        function selectProduct(product) {
+            currentProduct = product;
+            document.querySelectorAll('.chrome-tab').forEach(tab => tab.classList.remove('active'));
+            const clickedTab = document.getElementById('tab-' + product.toLowerCase());
+            if (clickedTab) clickedTab.classList.add('active');
+            const chatArea = document.getElementById('chat-area');
+            const docLinksContainer = document.getElementById('doc-links-container');
+            const inputArea = document.getElementById('common-input-area');
+            const startNewChatBtn = document.getElementById('start-new-chat-button');
+
+            if (product === "EOC") {
+                chatArea.innerHTML = chatTemplates["EOC"];
+                chatArea.style.display = "block";
+                docLinksContainer.innerHTML =
+                    'See admin documentation <a href="https://developer.radiantlogic.com/eoc/latest/#0" target="_blank">Admin Documentation</a><br>' +
+                    'Environment Operations Center provides a unified control plane for managing your RadiantOne SaaS applications.';
+                if (inputArea) inputArea.style.display = "none";
+                if (startNewChatBtn) startNewChatBtn.style.display = "none";
+                document.getElementById('scroll-to-bottom-btn').style.display = 'none';
+                return;
+            }
+
+            chatArea.innerHTML = "";
+            chatArea.style.display = "none";
+            if (inputArea) inputArea.style.display = "flex";
+            if (startNewChatBtn) {
+                if (sessions[product].firstQuerySent) {
+                    startNewChatBtn.style.display = "inline-block";
+                } else {
+                    startNewChatBtn.style.display = "none";
+                }
+            }
+
+            if (product === "IDDM") {
+                docLinksContainer.innerHTML =
+                    'See admin documentation <a href="https://developer.radiantlogic.com/idm/v8.1/#0" target="_blank">Admin Documentation</a><br>' +
+                    'See developer documentation <a href="https://developer.radiantlogic.com/idm/v8.1/#1" target="_blank">Developer Documentation</a><br>' +
+                    'Simplify the management of identity data across distributed silos and speed up your identity projects.';
+            } else if (product === "IDA") {
+                docLinksContainer.innerHTML =
+                    'See user guide <a href="https://developer.radiantlogic.com/ia/iap-3.2/#0" target="_blank">User Guide</a><br>' +
+                    'See developer documentation <a href="https://developer.radiantlogic.com/ia/descartes/#1" target="_blank">Developer Documentation</a><br>' +
+                    'Quickly respond to audit recommendations and automate controls for compliant access rights.';
+            } else {
+                docLinksContainer.innerHTML = "";
+            }
+        }
+
+        function newChat(product) {
+            sessions[product].sessionId = null;
+            sessions[product].firstQuerySent = false;
+            const chatArea = document.getElementById('chat-area');
+            chatArea.innerHTML = "";
+            chatArea.style.display = "none";
+            const startNewChatBtn = document.getElementById('start-new-chat-button');
+            if (startNewChatBtn) startNewChatBtn.style.display = "none";
+            document.getElementById('scroll-to-bottom-btn').style.display = 'none';
+        }
+    </script>
+</body>
+
+</html>
