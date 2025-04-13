@@ -12,7 +12,8 @@ COPY environment.yml /app/
 # Create the conda environment
 RUN conda env create -f environment.yml
 
-# Copy your web server code
+# Copy your web server code and templates directory
+COPY templates/ /app/templates/
 COPY main.py /app/
 
 # Copy the .env file containing environment variables
