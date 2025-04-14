@@ -1,12 +1,13 @@
+import json
+import logging
 import os
 import re
-import uuid
-import json
 import traceback
+import uuid
+
 import requests
-import logging
-from flask import Flask, request, jsonify, Response, render_template
-from dotenv import load_dotenv, dotenv_values
+from dotenv import dotenv_values, load_dotenv
+from flask import Flask, Response, jsonify, render_template, request
 
 # Load environment variables
 load_dotenv('lil-lisa-web.env')
