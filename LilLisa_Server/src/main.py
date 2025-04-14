@@ -333,7 +333,7 @@ async def invoke_stream_html(
     react_agent = StreamingReActAgent.from_tools(
         tools=tools,
         llm=llm,
-        verbose=True,
+        verbose=False,
         max_iterations=MAX_ITERATIONS,
     )
     prompt = (
