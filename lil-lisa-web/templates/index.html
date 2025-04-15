@@ -21,13 +21,32 @@
         }
 
         header.header {
-            background: #1d2d44;
+            background: black;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
             display: flex;
             align-items: center;
             justify-content: space-between;
             padding: 0 30px;
-            height: 70px;
+            height: 80px;
+            width: 100%;
+        }
+
+        .right-nav {
+            display: flex;
+            align-items: center;
+            gap: 25px;
+        }
+
+        .nav-link {
+            color: #ffffff;
+            font-size: 1.4rem;
+            text-decoration: none;
+            font-weight: 700;
+            transition: color 0.3s;
+        }
+
+        .nav-link:hover {
+            color: #ffc107;
         }
 
         nav.nav {
@@ -36,8 +55,9 @@
         }
 
         nav.nav img.logo-image {
-            height: 60px;
-            width: auto;
+            margin-left: -30px;
+            height: 80px;
+            aspect-ratio: auto;
             margin-right: 25px;
         }
 
@@ -359,19 +379,24 @@
 <body>
     <header class="header">
         <nav class="nav">
-            <img src="https://raw.githubusercontent.com/Vezingg/rocknbot/main/LilLisa_Server/src/RadiantLogic.png"
+            <img src="https://raw.githubusercontent.com/Vezingg/rocknbot/main/LilLisa_Server/src/RadiantLogic_img.png"
                 alt="Radiant Logic Logo" class="logo-image">
-            <a href="https://marketplace.radiantlogic.com/" target="_blank">Marketplace</a>
-            <a href="https://support.radiantlogic.com/hc/en-us" target="_blank">Support</a>
         </nav>
-        <button class="request-trial"><a href="https://www.radiantlogic.com/request-a-trial/" target="_blank"
-                style="text-decoration: none; color: #1d2d44;">Request Trial</a></button>
+        <div class="right-nav">
+            <a href="https://marketplace.radiantlogic.com/" target="_blank" class="nav-link">Marketplace</a>
+            <a href="https://support.radiantlogic.com/hc/en-us" target="_blank" class="nav-link"
+                style="text-decoration: underline;">Support</a>
+            <button class="request-trial" style="background: #28a745; color: #000000;"><a
+                    href="https://www.radiantlogic.com/request-a-trial/" target="_blank"
+                    style="text-decoration: none; color: #000000;">Request Trial</a></button>
+        </div>
     </header>
     <div class="main-content">
         <section class="hero">
             <h1>Welcome to Radiant Logic Documentation Assistant</h1>
             <p>
-                Ask your product-related questions below. Answers are drawn from our product documentation and include
+                Ask your product-related questions below. Answers are drawn from our product documentation and
+                include
                 citations. Provide the product version for version-specific responses.
             </p>
         </section>
@@ -388,7 +413,8 @@
                             onchange="handleGlobalLanguageChange(this)"> French
                     </label>
                 </div>
-                <button id="start-new-chat-button" onclick="newChat(currentProduct)" style="display: none;">Start New
+                <button id="start-new-chat-button" onclick="newChat(currentProduct)" style="display: none;">Start
+                    New
                     Chat</button>
             </div>
             <div id="chat-area"></div>
@@ -556,7 +582,7 @@
                         if (descriptionDiv) descriptionDiv.remove();
                         cotDiv.style.display = "none";
                         answerDiv.style.display = "block";
-                        await streamTextSmoothly(answerDiv, chunk.slice(4), 50);
+                        await streamTextSmoothly(answerDiv, chunk.slice(4), 0);
                     }
                 }
                 if (autoScrollEnabled) {

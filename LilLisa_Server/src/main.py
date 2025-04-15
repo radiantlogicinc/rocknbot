@@ -140,6 +140,9 @@ class LiteLLM(LLM):
             yield resp.message.content
 
 class StreamingReActAgent(ReActAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.llm = LiteLLM(model=LLM_MODEL)
     def iter_steps(self, prompt: str):
         task = self.create_task(prompt)
         while True:
@@ -149,17 +152,39 @@ class StreamingReActAgent(ReActAgent):
                 break
 
     def stream_chat(self, prompt: str):
+        accumulated = ""
         try:
             for step_output in self.iter_steps(prompt):
                 step = step_output.output
+                # Append each chunk to the accumulated text.
+                accumulated += step.response
                 if not step_output.is_last:
                     yield "cot", f"{step.response}"
                 else:
                     yield "ans", f"{step.response}"
+                    # Update last_thought in non-streaming context.
+                    self.llm.last_thought = accumulated
                     return
         except Exception as e:
             utils.logger.error(f"Stream error: {str(e)}")
-            yield "ans", f"ANS: Error: Unable to process request due to {str(e)}. Please try again."
+            # Check if the error indicates we reached max iterations.
+            if "Reached max iterations." in str(e):
+                final_answer = accumulated.strip()
+                # If nothing has been accumulated, perform a fallback non-streaming call.
+                if not final_answer:
+                    try:
+                        # Call the non-streaming chat to retrieve the final observation.
+                        response = self.llm.chat([ChatMessage(role="user", content=prompt)]).message.content
+                        final_answer = response
+                    except Exception as fallback_e:
+                        utils.logger.error(f"Fallback call failed: {fallback_e}")
+                        final_answer = "No response produced."
+                yield "ans", final_answer
+            else:
+                yield "ans", f"ANS: Error: Unable to process request due to {str(e)}. Please try again."
+
+
+
 # -----------------------------------------------------------------------------
 # Application Lifecycle Management
 # -----------------------------------------------------------------------------
@@ -438,7 +463,7 @@ async def invoke_stream_html(
                 chunks = html_chunk_text(html_answer)
                 for chunk in chunks:
                     yield f"ANS: {chunk}\n"
-                    await asyncio.sleep(0.05)
+                    # await asyncio.sleep(0.025)
 
     return StreamingResponse(streamer(), media_type="text/html")
 
@@ -803,10 +828,21 @@ async def rebuild_docs(encrypted_key: str) -> str:
                                 failed_clone_messages += f"{msg} "
                         md_files = find_md_files(target_dir)
                         for file in md_files:
-                            with open(file, "r", encoding="utf-8") as f:
-                                first_lines = [next(f).strip() for _ in range(5) if f.readable()]
-                            metadata = extract_metadata_from_lines(first_lines)
-                            metadata["version"] = branch
+                            try:
+                                with open(file, "r", encoding="utf-8") as f:
+                                    # Read up to 5 lines safely
+                                    first_lines = []
+                                    for _ in range(5):
+                                        try:
+                                            line = next(f).strip()
+                                            first_lines.append(line)
+                                        except StopIteration:
+                                            break
+                                metadata = extract_metadata_from_lines(first_lines)
+                                metadata["version"] = branch
+                            except Exception as e:
+                                utils.logger.error("Failed to process file %s: %s", file, e)
+                                continue
                             documents = SimpleDirectoryReader(
                                 input_files=[file], file_extractor=file_extractor
                             ).load_data()
@@ -871,4 +907,4 @@ def home():
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8080, lifespan="on")
+    uvicorn.run(app, host="127.0.0.1", port=8000, lifespan="on")
