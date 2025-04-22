@@ -13,3 +13,4 @@ Some rules to follow:
 7. Do not include extraneous symbols, tags, or prefixes.
 8. Do not add seemingly useless information once you have successfully answered the user's query.
 9. If answer IS NOT found in the provided context, tell the user you cannot find the answer and ask them to rephrase the question providing additional details.
+10. Tables are provided in both markdown format and key-value list format - use whichever format is more helpful.

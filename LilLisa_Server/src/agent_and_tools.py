@@ -231,6 +231,70 @@ def improve_query(query: str, conversation_history: str) -> str:
     return response
 
 
+def format_tables_in_chunks(chunks: str) -> str:
+    """Detect and format tables in retrieved chunks at query time.
+
+    This function processes the input string to identify Markdown tables,
+    preserving their original format and adding a key-value representation.
+
+    Args:
+        chunks (str): Concatenated text from retrieved document nodes.
+
+    Returns:
+        str: Formatted text with tables in both Markdown and key-value formats.
+    """
+    lines = chunks.splitlines()
+    result_lines = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Check if the line might start a table (contains multiple pipes)
+        if line.count("|") >= 2:
+            table_start = i
+            table_lines = [line]
+            i += 1
+
+            # Collect lines that form the table (pipes or separator lines)
+            while i < len(lines) and (lines[i].count("|") >= 2 or set(lines[i].strip()) <= {"|", "-", " "}):
+                table_lines.append(lines[i])
+                i += 1
+
+            # Verify table structure (needs at least header and separator)
+            if len(table_lines) >= 2:
+                # Preserve the original Markdown table
+                result_lines.extend(table_lines)
+                result_lines.append("")  # Separator
+
+                # Generate key-value format
+                try:
+                    headers = [col.strip() for col in table_lines[0].strip("|").split("|")]
+                    data_lines = [ln for ln in table_lines[2:] if "|" in ln]
+
+                    if headers and data_lines:
+                        result_lines.append("**Same table in key-value format:**")
+                        for idx, row in enumerate(data_lines, start=1):
+                            cols = [col.strip() for col in row.strip("|").split("|")]
+                            result_lines.append(f"{idx}.")
+                            for header, value in zip(headers, cols):
+                                if header and value:
+                                    result_lines.append(f"{idx}.{header}={value}")
+                            result_lines.append("")  # Blank line between rows
+                except Exception as e:
+                    result_lines.append(f"(Error formatting table: {str(e)})")
+
+            else:
+                # Not a valid table, treat as regular text
+                result_lines.extend(table_lines)
+        else:
+            # Non-table line
+            result_lines.append(line)
+            i += 1
+
+    return "\n".join(result_lines)
+
+
 def answer_from_document_retrieval(
     product: str, original_query: str, generated_query: str, conversation_history: str
 ) -> str:
@@ -306,9 +370,10 @@ def answer_from_document_retrieval(
     nodes = document_retriever.retrieve(query)
     reranked_nodes = RERANKER.postprocess_nodes(nodes=nodes, query_str=query)[:10]
     useful_links = list(dict.fromkeys([node.metadata["github_url"] for node in reranked_nodes]))[:3]
-    chunks = "\n\n".join(f"{node.text}" for node in reranked_nodes)
+    raw_chunks = "\n\n".join(f"{node.text}" for node in reranked_nodes)
+    formatted_chunks = format_tables_in_chunks(raw_chunks)
 
-    user_prompt = QA_USER_PROMPT.replace("<CONTEXT>", chunks)
+    user_prompt = QA_USER_PROMPT.replace("<CONTEXT>", formatted_chunks)
     user_prompt = user_prompt.replace("<CONVERSATION_HISTORY>", conversation_history)
     user_prompt = user_prompt.replace("<QUESTION>", original_query)
 
