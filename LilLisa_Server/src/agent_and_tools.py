@@ -9,6 +9,8 @@ import re
 import traceback
 from difflib import get_close_matches
 from enum import Enum
+import logging
+
 
 from litellm import completion
 from llama_index.core import Settings, VectorStoreIndex
@@ -282,7 +284,8 @@ def format_tables_in_chunks(chunks: str) -> str:
                                     result_lines.append(f"{idx}.{header}={value}")
                             result_lines.append("")  # Blank line between rows
                 except Exception as e:
-                    result_lines.append(f"(Error formatting table: {str(e)})")
+                    logging.error("Error processing table formatting: %s", e, exc_info=True)
+                    result_lines.append("An error occurred while formatting the table.")
 
             else:
                 # Not a valid table, treat as regular text
