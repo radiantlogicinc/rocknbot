@@ -132,6 +132,7 @@ else:
     utils.logger.critical("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
     raise ValueError("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
 
+LANCE_DB = None
 IDDM_INDEX = None
 IDDM_QA_PAIRS_INDEX = None
 IDA_INDEX = None
@@ -141,12 +142,22 @@ IDA_RETRIEVER = None
 IDDM_QA_PAIRS_RETRIEVER = None
 IDA_QA_PAIRS_RETRIEVER = None
 def create_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
-    """Create indices and retreivers from lancedb tables"""
+    """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
+    global LANCE_DB
     global IDDM_RETRIEVER, IDA_RETRIEVER, IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
     global IDDM_INDEX, IDA_INDEX, IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
 
     # Establish connection to LanceDB
-    db = lancedb.connect(lancedb_folderpath)
+    try:
+        LANCE_DB = lancedb.connect(lancedb_folderpath)
+        utils.logger.info(f"Successfully connected to LanceDB at {lancedb_folderpath}")
+    except Exception as e:
+        utils.logger.critical(f"Failed to connect to LanceDB at {lancedb_folderpath}: {e}", exc_info=True)
+        # Set all to None as we cannot proceed
+        IDDM_INDEX, IDA_INDEX, IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX = None, None, None, None
+        IDDM_RETRIEVER, IDA_RETRIEVER, IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER = None, None, None, None
+        return # Stop execution if connection fails
+
     Settings.embed_model = OpenAIEmbedding(
         model="text-embedding-3-large",
         retry_on_ratelimit=True,
@@ -154,22 +165,83 @@ def create_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
         backoff_factor=2.0,
         embed_batch_size=4  # Default is 10, reducing to spread out API calls
     )
-    iddm_table = db.open_table("IDDM")
-    ida_table = db.open_table("IDA")
-    iddm_qa_pairs_table = db.open_table("IDDM_QA_PAIRS")
-    ida_qa_pairs_table = db.open_table("IDA_QA_PAIRS")
-    iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
-    ida_vector_store = LanceDBVectorStore.from_table(ida_table)
-    iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
-    ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
-    IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
-    IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
-    IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
-    IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
-    IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
-    IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
-    IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
-    IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+
+    # --- Define a helper function for index creation --- 
+    def _create_indices_if_needed(table: lancedb.table.Table, table_name: str, is_qa_table: bool = False):
+        if not table: # Check if table object is valid
+            utils.logger.error(f"Cannot create indices for {table_name} because the table object is invalid.")
+            return
+        try:
+            # Attempt to create vector index
+            utils.logger.info(f"Checking/creating vector index for {table_name}...")
+            # Use replace=False to avoid error if index exists, but it might still fail for other reasons
+            table.create_index(metric="cosine", replace=False) 
+            utils.logger.info(f"Vector index check/creation complete for {table_name}.")
+        except Exception as index_exc:
+             # Log error but continue, as index might already exist or creation failed for other reasons
+            utils.logger.warning(f"Could not create vector index for {table_name} (might already exist or other error): {index_exc}")
+
+        # Create FTS index only for non-QA tables
+        if not is_qa_table:
+            try:
+                utils.logger.info(f"Checking/creating FTS index for {table_name}...")
+                # Assuming text_key is 'text', adjust if different.
+                table.create_fts_index("text", replace=False, use_tantivy=False)
+                utils.logger.info(f"FTS index check/creation complete for {table_name}.")
+            except Exception as fts_exc:
+                utils.logger.warning(f"Could not create FTS index for {table_name} (might already exist or other error): {fts_exc}")
+
+    # --- Process IDDM table --- 
+    try:
+        iddm_table = LANCE_DB.open_table("IDDM")
+        _create_indices_if_needed(iddm_table, "IDDM")
+        iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
+        IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
+        IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
+        utils.logger.info("Initialized IDDM retriever and index.")
+    except Exception as e:
+        utils.logger.error(f"Failed to initialize IDDM table/index/retriever: {e}", exc_info=True)
+        IDDM_INDEX = None
+        IDDM_RETRIEVER = None
+
+    # --- Process IDA table --- 
+    try:
+        ida_table = LANCE_DB.open_table("IDA")
+        _create_indices_if_needed(ida_table, "IDA")
+        ida_vector_store = LanceDBVectorStore.from_table(ida_table)
+        IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
+        IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
+        utils.logger.info("Initialized IDA retriever and index.")
+    except Exception as e:
+        utils.logger.error(f"Failed to initialize IDA table/index/retriever: {e}", exc_info=True)
+        IDA_INDEX = None
+        IDA_RETRIEVER = None
+
+    # --- Process IDDM_QA_PAIRS table --- 
+    try:
+        iddm_qa_pairs_table = LANCE_DB.open_table("IDDM_QA_PAIRS")
+        _create_indices_if_needed(iddm_qa_pairs_table, "IDDM_QA_PAIRS", is_qa_table=True)
+        iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
+        IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
+        IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+        utils.logger.info("Initialized IDDM_QA_PAIRS retriever and index.")
+    except Exception as e:
+        utils.logger.error(f"Failed to initialize IDDM_QA_PAIRS table/index/retriever: {e}", exc_info=True)
+        IDDM_QA_PAIRS_INDEX = None
+        IDDM_QA_PAIRS_RETRIEVER = None
+
+    # --- Process IDA_QA_PAIRS table --- 
+    try:
+        ida_qa_pairs_table = LANCE_DB.open_table("IDA_QA_PAIRS")
+        _create_indices_if_needed(ida_qa_pairs_table, "IDA_QA_PAIRS", is_qa_table=True)
+        ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
+        IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
+        IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+        utils.logger.info("Initialized IDA_QA_PAIRS retriever and index.")
+    except Exception as e:
+        utils.logger.error(f"Failed to initialize IDA_QA_PAIRS table/index/retriever: {e}", exc_info=True)
+        IDA_QA_PAIRS_INDEX = None
+        IDA_QA_PAIRS_RETRIEVER = None
 
 
 class PRODUCT(str, Enum):

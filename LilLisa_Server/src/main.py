@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import zipfile
 from contextlib import asynccontextmanager
@@ -258,10 +259,9 @@ async def lifespan(_app: FastAPI):
         raise ValueError("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
 
     # Validate LanceDB folder path
-    if os.path.exists(LANCEDB_FOLDERPATH):
-        create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
-    else:
+    if not os.path.exists(LANCEDB_FOLDERPATH):
         await init_lance_databases()
+    create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
     yield
     os.unsetenv("OPENAI_API_KEY")
@@ -624,7 +624,7 @@ async def _run_update_golden_qa_pairs_task(product: str):
     """Contains the core logic for updating golden QA pairs, run as a background task."""
     try:
         utils.logger.info(f"Background task: Starting golden QA pair update for {product}.")
-        
+
         # Clone repo (Consider running sync git call in executor)
         temp_qa_folder = None
         try:
@@ -638,13 +638,13 @@ async def _run_update_golden_qa_pairs_task(product: str):
             return # Stop execution if clone fails
 
         filepath = f"{temp_qa_folder}/{product.lower()}_qa_pairs.md"
-        
+
         if not os.path.exists(filepath):
             utils.logger.error(f"Background task: QA pairs file not found at {filepath}")
             if os.path.exists(temp_qa_folder):
                  shutil.rmtree(temp_qa_folder)
             return # Stop execution if file doesn't exist
-        
+
         try:
             with open(filepath, "r", encoding="utf-8") as file:
                 file_content = file.read()
@@ -673,7 +673,7 @@ async def _run_update_golden_qa_pairs_task(product: str):
         if not qa_pairs:
             utils.logger.warning(f"Background task: No QA pairs found in the file for {product}. Skipping DB update.")
             return
-            
+
         documents = []
         qa_pattern = re.compile(r"Question:\s*(.*?)\nAnswer:\s*(.*)", re.DOTALL)
         product_versions = IDDM_PRODUCT_VERSIONS if product == "IDDM" else IDA_PRODUCT_VERSIONS
@@ -701,19 +701,16 @@ async def _run_update_golden_qa_pairs_task(product: str):
 
         splitter = SentenceSplitter(chunk_size=10000) # QA pairs are typically short, large chunk size is fine
         nodes = splitter.get_nodes_from_documents(documents=documents, show_progress=False) # Turn off progress for background task
-        
+
         # Note: Consider if Settings need to be set per request/task
         Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-large") 
-        
+
         vector_store = LanceDBVectorStore(uri="lancedb", table_name=table_name, query_type="hybrid")
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
         utils.logger.info(f"Background task: Creating/updating index for {table_name} with {len(nodes)} nodes.")
         index = VectorStoreIndex(nodes=nodes, storage_context=storage_context)
-        retriever = index.as_retriever(similarity_top_k=8)
-        update_retrievers(table_name, retriever)
-        update_indices(table_name, index)
+        _ = index.as_retriever(similarity_top_k=8)
         utils.logger.info(f"Background task: Successfully inserted {len(nodes)} QA pairs into DB for {product}.")
-
     except jwt.exceptions.InvalidSignatureError:
         utils.logger.error(f"Background task: Failed signature verification for update_golden_qa_pairs ({product}). Unauthorized.")
     except Exception as exc:
@@ -961,10 +958,8 @@ async def _run_rebuild_docs_task():
                         index = VectorStoreIndex(nodes=all_nodes[:1], storage_context=storage_context)
                         if len(all_nodes) > 1:
                             index.insert_nodes(all_nodes[1:])
-                        retriever = index.as_retriever(similarity_top_k=50)
-                        update_retrievers(product, retriever)
-                        update_indices(product, index)
-                        utils.logger.info(f"Background task: Successfully updated retriever for {product}.")
+                        _ = index.as_retriever(similarity_top_k=50)
+                        utils.logger.info(f"Background task: Successfully inserted/updated nodes for {product}.") # Changed log message
                     else:
                          utils.logger.warning(f"Background task: No nodes to index for product {product}.")
 
@@ -981,6 +976,7 @@ async def _run_rebuild_docs_task():
         # Log any other errors during the rebuild process
         utils.logger.critical(f"Background task: Documentation rebuild failed unexpectedly. Error: {exc}", exc_info=True)
 
+    sys.exit(0)  # Kill the process immediately
 
 @app.post("/rebuild_docs/", response_model=str, response_class=PlainTextResponse)
 async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
