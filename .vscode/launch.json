@@ -10,7 +10,8 @@
             "request": "launch",
             "program": "${workspaceFolder}/LilLisa_Server/src/main.py",
             "cwd": "${workspaceFolder}/LilLisa_Server",
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "justMyCode": false
         },
     ]
 }

@@ -370,7 +370,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             if not isinstance(self._table, lancedb.db.LanceTable):
                 raise ValueError("FTS index creation not supported for LanceDB Cloud.")
             if self._fts_index is None:
-                self._fts_index = self._table.create_fts_index(self.text_key, replace=True)
+                self._fts_index = self._table.create_fts_index(self.text_key, replace=True, use_tantivy=False)
 
             # Execute vector search.
             vector_query = self._table.search(query=query.query_embedding, vector_column_name=self.vector_column_name)

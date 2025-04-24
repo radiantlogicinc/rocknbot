@@ -118,11 +118,6 @@ else:
     utils.logger.critical("LANCEDB_FOLDERPATH not found in lillisa_server.env")
     raise ValueError("LANCEDB_FOLDERPATH not found in lillisa_server.env")
 
-if not os.path.exists(lancedb_folderpath):
-    traceback.print_exc()
-    utils.logger.critical("%s not found", lancedb_folderpath)
-    raise NotImplementedError(f"{lancedb_folderpath} not found")
-
 if iddm_product_versions := lillisa_server_env["IDDM_PRODUCT_VERSIONS"]:
     IDDM_PRODUCT_VERSIONS = str(iddm_product_versions).split(", ")
 else:
@@ -137,32 +132,44 @@ else:
     utils.logger.critical("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
     raise ValueError("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
 
+IDDM_INDEX = None
+IDDM_QA_PAIRS_INDEX = None
+IDA_INDEX = None
+IDA_QA_PAIRS_INDEX = None
+IDDM_RETRIEVER = None
+IDA_RETRIEVER = None
+IDDM_QA_PAIRS_RETRIEVER = None
+IDA_QA_PAIRS_RETRIEVER = None
+def create_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
+    """Create indices and retreivers from lancedb tables"""
+    global IDDM_RETRIEVER, IDA_RETRIEVER, IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
+    global IDDM_INDEX, IDA_INDEX, IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
 
-# Establish connection to LanceDB
-db = lancedb.connect(lancedb_folderpath)
-Settings.embed_model = OpenAIEmbedding(
-    model="text-embedding-3-large",
-    retry_on_ratelimit=True,
-    max_retries=5,
-    backoff_factor=2.0,
-    embed_batch_size=4  # Default is 10, reducing to spread out API calls
-)
-iddm_table = db.open_table("IDDM")
-ida_table = db.open_table("IDA")
-iddm_qa_pairs_table = db.open_table("IDDM_QA_PAIRS")
-ida_qa_pairs_table = db.open_table("IDA_QA_PAIRS")
-iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
-ida_vector_store = LanceDBVectorStore.from_table(ida_table)
-iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
-ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
-IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
-IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
-IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
-IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
-IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
-IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
-IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
-IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+    # Establish connection to LanceDB
+    db = lancedb.connect(lancedb_folderpath)
+    Settings.embed_model = OpenAIEmbedding(
+        model="text-embedding-3-large",
+        retry_on_ratelimit=True,
+        max_retries=5,
+        backoff_factor=2.0,
+        embed_batch_size=4  # Default is 10, reducing to spread out API calls
+    )
+    iddm_table = db.open_table("IDDM")
+    ida_table = db.open_table("IDA")
+    iddm_qa_pairs_table = db.open_table("IDDM_QA_PAIRS")
+    ida_qa_pairs_table = db.open_table("IDA_QA_PAIRS")
+    iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
+    ida_vector_store = LanceDBVectorStore.from_table(ida_table)
+    iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
+    ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
+    IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
+    IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
+    IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
+    IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
+    IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
+    IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
+    IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+    IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
 
 
 class PRODUCT(str, Enum):
@@ -179,7 +186,7 @@ class PRODUCT(str, Enum):
         raise ValueError(f"{product} does not exist")
 
 
-def update_retriever(retriever_name, new_retriever):
+def update_retrievers(retriever_name, new_retriever):
     """
     Updates the reference to the appropriate retriever after "rebuild_docs" or "update_golden_qa_pairs" is called.
     """
@@ -192,6 +199,23 @@ def update_retriever(retriever_name, new_retriever):
         IDDM_QA_PAIRS_RETRIEVER = new_retriever
     elif retriever_name == "IDA_QA_PAIRS":
         IDA_QA_PAIRS_RETRIEVER = new_retriever
+    else:
+        raise ValueError(f"{retriever_name} does not exist")
+
+
+def update_indices(retriever_name, new_index):
+    """
+    Updates the reference to the appropriate indices after "rebuild_docs" or "update_golden_qa_pairs" is called.
+    """
+    global IDDM_INDEX, IDA_INDEX, IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
+    if retriever_name == "IDDM":
+        IDDM_INDEX = new_index
+    elif retriever_name == "IDA":
+        IDA_INDEX = new_index
+    elif retriever_name == "IDDM_QA_PAIRS":
+        IDDM_QA_PAIRS_INDEX = new_index
+    elif retriever_name == "IDA_QA_PAIRS":
+        IDA_QA_PAIRS_INDEX = new_index
     else:
         raise ValueError(f"{retriever_name} does not exist")
 
