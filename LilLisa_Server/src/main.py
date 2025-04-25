@@ -53,6 +53,8 @@ from src.agent_and_tools import (
     handle_user_answer,
     improve_query,
     create_lancedb_retrievers_and_indices,
+    create_docdbs_lancedb_retrievers_and_indices,
+    create_qa_pairs_lancedb_retrievers_and_indices,
 )
 from src.lillisa_server_context import LOCALE, LilLisaServerContext
 from src.llama_index_lancedb_vector_store import LanceDBVectorStore
@@ -290,13 +292,12 @@ async def init_lance_databases():
         utils.logger.critical("Automatic documentation rebuild failed during startup: %s", rebuild_exc, exc_info=True)
         raise RuntimeError("Failed to automatically rebuild documentation during startup.") from rebuild_exc
 
-    for product in PRODUCT:
-        try:
-            await _run_update_golden_qa_pairs_task(product.value)
-            utils.logger.info("Rebuilt golden QA pairs for %s completed successfully during startup.", product.value)
-        except Exception as rebuild_exc:
-            utils.logger.critical("Golden QA pairs rebuild for %s failed during startup: %s", product.value, rebuild_exc, exc_info=True)
-            raise RuntimeError("Golden QA pairs rebuild failed during startup.") from rebuild_exc
+    try:
+        await _run_update_golden_qa_pairs_task()
+        utils.logger.info("Rebuilt golden QA pairs for completed successfully during startup.")
+    except Exception as rebuild_exc:
+        utils.logger.critical("Golden QA pairs rebuild failed during startup: %s", rebuild_exc, exc_info=True)
+        raise RuntimeError("Golden QA pairs rebuild failed during startup.") from rebuild_exc
 
 app = FastAPI(lifespan=lifespan)
 
@@ -627,107 +628,109 @@ async def get_golden_qa_pairs(product: str, encrypted_key: str) -> FileResponse:
         raise HTTPException(status_code=500, detail="Internal error in get_golden_qa_pairs()") from exc
 
 
-async def _run_update_golden_qa_pairs_task(product: str):
+async def _run_update_golden_qa_pairs_task():
     """Contains the core logic for updating golden QA pairs, run as a background task."""
-    try:
-        utils.logger.info(f"Background task: Starting golden QA pair update for {product}.")
-
-        # Clone repo (Consider running sync git call in executor)
-        temp_qa_folder = None
+    for product_enum in PRODUCT:
+        product = product_enum.value
         try:
-            temp_qa_folder = tempfile.mkdtemp()
-            utils.logger.info(f"Background task: Cloning {QA_PAIRS_GITHUB_REPO_URL} into {temp_qa_folder}")
-            git.Repo.clone_from(QA_PAIRS_GITHUB_REPO_URL, temp_qa_folder)
-        except Exception as clone_exc:
-            utils.logger.error(f"Background task: Failed to clone QA pairs repo: {clone_exc}", exc_info=True)
-            if temp_qa_folder and os.path.exists(temp_qa_folder):
-                 shutil.rmtree(temp_qa_folder)
-            return # Stop execution if clone fails
+            utils.logger.info(f"Background task: Starting golden QA pair update for {product}.")
 
-        filepath = f"{temp_qa_folder}/{product.lower()}_qa_pairs.md"
+            # Clone repo (Consider running sync git call in executor)
+            temp_qa_folder = None
+            try:
+                temp_qa_folder = tempfile.mkdtemp()
+                utils.logger.info(f"Background task: Cloning {QA_PAIRS_GITHUB_REPO_URL} into {temp_qa_folder}")
+                git.Repo.clone_from(QA_PAIRS_GITHUB_REPO_URL, temp_qa_folder)
+            except Exception as clone_exc:
+                utils.logger.error(f"Background task: Failed to clone QA pairs repo: {clone_exc}", exc_info=True)
+                if temp_qa_folder and os.path.exists(temp_qa_folder):
+                    shutil.rmtree(temp_qa_folder)
+                return # Stop execution if clone fails
 
-        if not os.path.exists(filepath):
-            utils.logger.error(f"Background task: QA pairs file not found at {filepath}")
-            if os.path.exists(temp_qa_folder):
-                 shutil.rmtree(temp_qa_folder)
-            return # Stop execution if file doesn't exist
+            filepath = f"{temp_qa_folder}/{product.lower()}_qa_pairs.md"
 
-        try:
-            with open(filepath, "r", encoding="utf-8") as file:
-                file_content = file.read()
-        except Exception as read_exc:
-            utils.logger.error(f"Background task: Failed to read QA pairs file {filepath}: {read_exc}", exc_info=True)
-            if os.path.exists(temp_qa_folder):
-                 shutil.rmtree(temp_qa_folder)
-            return # Stop execution if read fails
-        finally:
-             # Clean up the temporary folder after reading or on error
-            if temp_qa_folder and os.path.exists(temp_qa_folder):
-                utils.logger.info(f"Background task: Cleaning up temporary folder {temp_qa_folder}")
+            if not os.path.exists(filepath):
+                utils.logger.error(f"Background task: QA pairs file not found at {filepath}")
+                if os.path.exists(temp_qa_folder):
+                    shutil.rmtree(temp_qa_folder)
+                return # Stop execution if file doesn't exist
+
+            try:
+                with open(filepath, "r", encoding="utf-8") as file:
+                    file_content = file.read()
+            except Exception as read_exc:
+                utils.logger.error(f"Background task: Failed to read QA pairs file {filepath}: {read_exc}", exc_info=True)
+                if os.path.exists(temp_qa_folder):
+                    shutil.rmtree(temp_qa_folder)
+                return # Stop execution if read fails
+            finally:
+                # Clean up the temporary folder after reading or on error
+                if temp_qa_folder and os.path.exists(temp_qa_folder):
+                    utils.logger.info(f"Background task: Cleaning up temporary folder {temp_qa_folder}")
+                    shutil.rmtree(temp_qa_folder)
+
+            # Process content and update DB
+            db = lancedb.connect(LANCEDB_FOLDERPATH)
+            table_name = f"{product}_QA_PAIRS"
+            try:
+                utils.logger.info(f"Background task: Dropping existing table {table_name} if it exists.")
+                db.drop_table(table_name)
+            except Exception:
+                # This is expected if the table doesn't exist, log as info
+                utils.logger.info(f"Background task: Table {table_name} does not exist or could not be dropped, proceeding.")
+
+            qa_pairs = [pair.strip() for pair in file_content.split("# Question/Answer Pair") if pair.strip()]
+            if not qa_pairs:
+                utils.logger.warning(f"Background task: No QA pairs found in the file for {product}. Skipping DB update.")
+                return
+
+            documents = []
+            qa_pattern = re.compile(r"Question:\s*(.*?)\nAnswer:\s*(.*)", re.DOTALL)
+            product_versions = IDDM_PRODUCT_VERSIONS if product == "IDDM" else IDA_PRODUCT_VERSIONS
+            version_pattern = (
+                re.compile(r"v?\d+\.\d+", re.IGNORECASE)
+                if product == "IDDM"
+                else re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
+            )
+
+            for pair in qa_pairs:
+                if match := qa_pattern.search(pair):
+                    question, answer = match[1].strip(), match[2].strip()
+                    doc = Document(text=question)
+                    doc.metadata["answer"] = answer
+                    matched_versions = get_matching_versions(question, product_versions, version_pattern)
+                    doc.metadata["version"] = matched_versions[0] if matched_versions else "none"
+                    doc.excluded_embed_metadata_keys.extend(["version", "answer"])
+                    documents.append(doc)
+                else:
+                    utils.logger.warning(f"Background task: Could not parse QA pair: {pair[:100]}...")
+
+            if not documents:
+                utils.logger.warning(f"Background task: No valid documents could be created from QA pairs for {product}. Skipping DB update.")
+                return
+
+            splitter = SentenceSplitter(chunk_size=10000) # QA pairs are typically short, large chunk size is fine
+            nodes = splitter.get_nodes_from_documents(documents=documents, show_progress=False) # Turn off progress for background task
+
+            # Note: Consider if Settings need to be set per request/task
+            Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-large") 
+
+            vector_store = LanceDBVectorStore(uri="lancedb", table_name=table_name, query_type="hybrid")
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            utils.logger.info(f"Background task: Creating/updating index for {table_name} with {len(nodes)} nodes.")
+            index = VectorStoreIndex(nodes=nodes, storage_context=storage_context)
+            _ = index.as_retriever(similarity_top_k=8)
+            utils.logger.info(f"Background task: Successfully inserted {len(nodes)} QA pairs into DB for {product}.")
+        except jwt.exceptions.InvalidSignatureError:
+            utils.logger.error(f"Background task: Failed signature verification for update_golden_qa_pairs ({product}). Unauthorized.")
+        except Exception as exc:
+            utils.logger.critical(f"Background task: Internal error in update_golden_qa_pairs ({product}): {exc}", exc_info=True)
+            # Ensure temporary folder is cleaned up even if unexpected error occurs before finally block
+            if 'temp_qa_folder' in locals() and temp_qa_folder and os.path.exists(temp_qa_folder):
+                utils.logger.warning(f"Background task: Cleaning up temporary folder {temp_qa_folder} due to error.")
                 shutil.rmtree(temp_qa_folder)
 
-        # Process content and update DB
-        db = lancedb.connect(LANCEDB_FOLDERPATH)
-        table_name = f"{product}_QA_PAIRS"
-        try:
-            utils.logger.info(f"Background task: Dropping existing table {table_name} if it exists.")
-            db.drop_table(table_name)
-        except Exception:
-            # This is expected if the table doesn't exist, log as info
-            utils.logger.info(f"Background task: Table {table_name} does not exist or could not be dropped, proceeding.")
-
-        qa_pairs = [pair.strip() for pair in file_content.split("# Question/Answer Pair") if pair.strip()]
-        if not qa_pairs:
-            utils.logger.warning(f"Background task: No QA pairs found in the file for {product}. Skipping DB update.")
-            return
-
-        documents = []
-        qa_pattern = re.compile(r"Question:\s*(.*?)\nAnswer:\s*(.*)", re.DOTALL)
-        product_versions = IDDM_PRODUCT_VERSIONS if product == "IDDM" else IDA_PRODUCT_VERSIONS
-        version_pattern = (
-            re.compile(r"v?\d+\.\d+", re.IGNORECASE)
-            if product == "IDDM"
-            else re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
-        )
-
-        for pair in qa_pairs:
-            if match := qa_pattern.search(pair):
-                question, answer = match[1].strip(), match[2].strip()
-                doc = Document(text=question)
-                doc.metadata["answer"] = answer
-                matched_versions = get_matching_versions(question, product_versions, version_pattern)
-                doc.metadata["version"] = matched_versions[0] if matched_versions else "none"
-                doc.excluded_embed_metadata_keys.extend(["version", "answer"])
-                documents.append(doc)
-            else:
-                 utils.logger.warning(f"Background task: Could not parse QA pair: {pair[:100]}...")
-
-        if not documents:
-            utils.logger.warning(f"Background task: No valid documents could be created from QA pairs for {product}. Skipping DB update.")
-            return
-
-        splitter = SentenceSplitter(chunk_size=10000) # QA pairs are typically short, large chunk size is fine
-        nodes = splitter.get_nodes_from_documents(documents=documents, show_progress=False) # Turn off progress for background task
-
-        # Note: Consider if Settings need to be set per request/task
-        Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-large") 
-
-        vector_store = LanceDBVectorStore(uri="lancedb", table_name=table_name, query_type="hybrid")
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        utils.logger.info(f"Background task: Creating/updating index for {table_name} with {len(nodes)} nodes.")
-        index = VectorStoreIndex(nodes=nodes, storage_context=storage_context)
-        _ = index.as_retriever(similarity_top_k=8)
-        utils.logger.info(f"Background task: Successfully inserted {len(nodes)} QA pairs into DB for {product}.")
-    except jwt.exceptions.InvalidSignatureError:
-        utils.logger.error(f"Background task: Failed signature verification for update_golden_qa_pairs ({product}). Unauthorized.")
-    except Exception as exc:
-        utils.logger.critical(f"Background task: Internal error in update_golden_qa_pairs ({product}): {exc}", exc_info=True)
-        # Ensure temporary folder is cleaned up even if unexpected error occurs before finally block
-        if 'temp_qa_folder' in locals() and temp_qa_folder and os.path.exists(temp_qa_folder):
-             utils.logger.warning(f"Background task: Cleaning up temporary folder {temp_qa_folder} due to error.")
-             shutil.rmtree(temp_qa_folder)
-
-    create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+    create_qa_pairs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
 @app.post("/update_golden_qa_pairs/", response_model=str, response_class=PlainTextResponse)
 async def update_golden_qa_pairs(product: str, encrypted_key: str, background_tasks: BackgroundTasks) -> str:
@@ -743,7 +746,7 @@ async def update_golden_qa_pairs(product: str, encrypted_key: str, background_ta
         str: Immediate confirmation message.
     """
     jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
-    background_tasks.add_task(_run_update_golden_qa_pairs_task, product)
+    background_tasks.add_task(_run_update_golden_qa_pairs_task)
     return "Golden QA pair update initiated. Please wait for ~2 minutes before using Rocknbot"
 
 
@@ -985,7 +988,7 @@ async def _run_rebuild_docs_task():
         # Log any other errors during the rebuild process
         utils.logger.critical(f"Background task: Documentation rebuild failed unexpectedly. Error: {exc}", exc_info=True)
 
-    create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+    create_docdbs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
 @app.post("/rebuild_docs/", response_model=str, response_class=PlainTextResponse)
 async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) -> str:

@@ -149,31 +149,46 @@ IDDM_RETRIEVER = None
 IDA_RETRIEVER = None
 IDDM_QA_PAIRS_RETRIEVER = None
 IDA_QA_PAIRS_RETRIEVER = None
-def create_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
+def create_docdbs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
     """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
     global lance_db
-    global iddm_table, ida_table, iddm_qa_pairs_table, ida_qa_pairs_table
-    global iddm_vector_store, ida_vector_store, iddm_qa_pairs_vector_store, ida_qa_pairs_vector_store
-    global IDDM_RETRIEVER, IDA_RETRIEVER, IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
-    global IDDM_INDEX, IDA_INDEX, IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
+    global iddm_table, ida_table
+    global iddm_vector_store, ida_vector_store
+    global IDDM_RETRIEVER, IDA_RETRIEVER
+    global IDDM_INDEX, IDA_INDEX
 
     lance_db = lancedb.connect(lancedb_folderpath)
     iddm_table = lance_db.open_table("IDDM")
     ida_table = lance_db.open_table("IDA")
-    iddm_qa_pairs_table = lance_db.open_table("IDDM_QA_PAIRS")
-    ida_qa_pairs_table = lance_db.open_table("IDA_QA_PAIRS")
     iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
     ida_vector_store = LanceDBVectorStore.from_table(ida_table)
-    iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
-    ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
     IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
     IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
-    IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
-    IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
     IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
     IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
+
+def create_qa_pairs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
+    """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
+    global lance_db
+    global iddm_qa_pairs_table, ida_qa_pairs_table
+    global iddm_qa_pairs_vector_store, ida_qa_pairs_vector_store
+    global IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
+    global IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
+
+    lance_db = lancedb.connect(lancedb_folderpath)
+    iddm_qa_pairs_table = lance_db.open_table("IDDM_QA_PAIRS")
+    ida_qa_pairs_table = lance_db.open_table("IDA_QA_PAIRS")
+    iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
+    ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
+    IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
+    IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
     IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
     IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+
+def create_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
+    """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
+    create_docdbs_lancedb_retrievers_and_indices(lancedb_folderpath)
+    create_qa_pairs_lancedb_retrievers_and_indices(lancedb_folderpath)
 
 class PRODUCT(str, Enum):
     """Product"""
