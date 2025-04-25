@@ -35,8 +35,6 @@ from llama_index.core.vector_stores.utils import (
 from llama_index.vector_stores.lancedb.util import sql_operator_mapper
 
 import lancedb
-from src import utils
-
 
 _logger = logging.getLogger(__name__)
 
@@ -150,18 +148,15 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         elif reranker is None:
             object.__setattr__(self, "_reranker", None)
         else:
-            utils.logger.critical("`reranker` has to be a lancedb.rerankers.Reranker object.")
             raise ValueError("`reranker` has to be a lancedb.rerankers.Reranker object.")
 
         if isinstance(connection, lancedb.db.LanceDBConnection):
             object.__setattr__(self, "_connection", connection)
         elif isinstance(connection, str):
-            utils.logger.critical("`connection` has to be a lancedb.db.LanceDBConnection object.")
             raise ValueError("`connection` has to be a lancedb.db.LanceDBConnection object.")
         else:
             if api_key is None and os.getenv("LANCE_API_KEY") is None:
                 if uri.startswith("db://"):
-                    utils.logger.critical("API key is required for LanceDB cloud.")
                     raise ValueError("API key is required for LanceDB cloud.")
                 else:
                     object.__setattr__(self, "_connection", lancedb.connect(uri))
@@ -169,11 +164,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                 if "db://" not in uri:
                     object.__setattr__(self, "_connection", lancedb.connect(uri))
                     warnings.warn("api key provided with local uri. The data will be stored locally")
-                object.__setattr__(
-                    self,
-                    "_connection",
-                    lancedb.connect(uri, api_key=api_key or os.getenv("LANCE_API_KEY"), region=region),
-                )
+                object.__setattr__(self, "_connection", lancedb.connect(uri, api_key=api_key or os.getenv("LANCE_API_KEY"), region=region))
 
         if table is not None:
             try:
@@ -181,12 +172,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                 object.__setattr__(self, "_table", table)
                 object.__setattr__(self, "_table_name", table.name if hasattr(table, "name") else "remote_table")
             except AssertionError:
-                utils.logger.critical(
-                    "`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object."
-                )
-                raise ValueError(
-                    "`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object."
-                )
+                raise ValueError("`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object.")
         else:
             if self._table_exists():
                 object.__setattr__(self, "_table", self._connection.open_table(table_name))
@@ -203,7 +189,6 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         """Create instance from table."""
         try:
             if not isinstance(table, (lancedb.db.LanceTable, lancedb.remote.table.RemoteTable)):
-                utils.logger.critical("argument is not lancedb table instance")
                 raise Exception("argument is not lancedb table instance")
             return cls(table=table, query_type=query_type)
         except Exception:
@@ -213,7 +198,6 @@ class LanceDBVectorStore(BasePydanticVectorStore):
     def _add_reranker(self, reranker: lancedb.rerankers.Reranker) -> None:
         """Add a reranker to an existing vector store."""
         if reranker is None:
-            utils.logger.critical("`reranker` has to be a lancedb.rerankers.Reranker object.")
             raise ValueError("`reranker` has to be a lancedb.rerankers.Reranker object.")
         object.__setattr__(self, "_reranker", reranker)
 
@@ -242,7 +226,6 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             )
         else:
             if col_name is None:
-                utils.logger.critical("Column name is required for scalar index creation.")
                 raise ValueError("Column name is required for scalar index creation.")
             self._table.create_scalar_index(col_name)
 
@@ -301,11 +284,9 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         Get nodes from the vector store.
         """
         if isinstance(self._table, lancedb.remote.table.RemoteTable):
-            utils.logger.critical("get_nodes is not supported for LanceDB cloud yet.")
             raise ValueError("get_nodes is not supported for LanceDB cloud yet.")
         if filters is not None:
             if "where" in kwargs:
-                utils.logger.critical("Cannot specify filter via both query and kwargs.")
                 raise ValueError("Cannot specify filter via both query and kwargs.")
             where = _to_lance_filter(filters, self._metadata_keys)
         else:
@@ -347,7 +328,6 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         """Query index for top k most similar nodes."""
         if query.filters is not None:
             if "where" in kwargs:
-                utils.logger.critical("Cannot specify filter via both query and kwargs.")
                 raise ValueError("Cannot specify filter via both query and kwargs.")
             where = _to_lance_filter(query.filters, self._metadata_keys)
         else:
@@ -362,9 +342,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             lance_query = self._table.search(query=_query, vector_column_name=self.vector_column_name)
             if hasattr(lance_query, "metric"):
                 lance_query = lance_query.metric("cosine")
-            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(
-                where, prefilter=True
-            )
+            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
             if hasattr(lance_query, "nprobes"):
                 lance_query.nprobes(self.nprobes)
             results = lance_query.to_pandas()
@@ -374,15 +352,12 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             lance_query = self._table.search(query=_query, vector_column_name=self.vector_column_name)
             if hasattr(lance_query, "metric"):
                 lance_query = lance_query.metric("cosine")
-            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(
-                where, prefilter=True
-            )
+            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
             results = lance_query.to_pandas()
 
         elif query_type == "hybrid":
             # Create FTS index if not already created.
             if not isinstance(self._table, lancedb.db.LanceTable):
-                utils.logger.critical("Could not create FTS index. self._table is %s", self._table)
                 raise ValueError("FTS index creation not supported for LanceDB Cloud.")
             if self._fts_index is None:
                 self._fts_index = self._table.create_fts_index(self.text_key, replace=True)
@@ -391,9 +366,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             vector_query = self._table.search(query=query.query_embedding, vector_column_name=self.vector_column_name)
             if hasattr(vector_query, "metric"):
                 vector_query = vector_query.metric("cosine")
-            vector_query = vector_query.limit(query.similarity_top_k * self.overfetch_factor).where(
-                where, prefilter=True
-            )
+            vector_query = vector_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
             if hasattr(vector_query, "nprobes"):
                 vector_query.nprobes(self.nprobes)
             vector_results = vector_query.to_pandas()
@@ -409,11 +382,9 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             results = combined_results
 
         else:
-            utils.logger.critical(f"Invalid query type: {query_type}")
             raise ValueError(f"Invalid query type: {query_type}")
 
         if len(results) == 0:
-            utils.logger.critical("Query results are empty.")
             raise Warning("Query results are empty.")
 
         nodes = []
