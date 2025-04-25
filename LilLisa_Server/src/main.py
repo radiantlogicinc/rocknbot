@@ -52,8 +52,6 @@ from src.agent_and_tools import (
     get_matching_versions,
     handle_user_answer,
     improve_query,
-    update_retrievers,
-    update_indices,
     create_lancedb_retrievers_and_indices,
 )
 from src.lillisa_server_context import LOCALE, LilLisaServerContext
@@ -258,10 +256,19 @@ async def lifespan(_app: FastAPI):
         utils.logger.critical("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
         raise ValueError("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
 
+    Settings.embed_model = OpenAIEmbedding(
+        model="text-embedding-3-large",
+        retry_on_ratelimit=True,
+        max_retries=5,
+        backoff_factor=2.0,
+        embed_batch_size=4  # Default is 10, reducing to spread out API calls
+    )
+
     # Validate LanceDB folder path
     if not os.path.exists(LANCEDB_FOLDERPATH):
         await init_lance_databases()
-    create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+    else:
+        create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
     yield
     os.unsetenv("OPENAI_API_KEY")
@@ -720,6 +727,8 @@ async def _run_update_golden_qa_pairs_task(product: str):
              utils.logger.warning(f"Background task: Cleaning up temporary folder {temp_qa_folder} due to error.")
              shutil.rmtree(temp_qa_folder)
 
+    create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+
 @app.post("/update_golden_qa_pairs/", response_model=str, response_class=PlainTextResponse)
 async def update_golden_qa_pairs(product: str, encrypted_key: str, background_tasks: BackgroundTasks) -> str:
     """
@@ -976,7 +985,7 @@ async def _run_rebuild_docs_task():
         # Log any other errors during the rebuild process
         utils.logger.critical(f"Background task: Documentation rebuild failed unexpectedly. Error: {exc}", exc_info=True)
 
-    sys.exit(0)  # Kill the process immediately
+    create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
 @app.post("/rebuild_docs/", response_model=str, response_class=PlainTextResponse)
 async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
