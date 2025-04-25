@@ -36,6 +36,8 @@ from llama_index.vector_stores.lancedb.util import sql_operator_mapper
 
 import lancedb
 
+from src import utils
+
 _logger = logging.getLogger(__name__)
 
 
@@ -358,9 +360,10 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         elif query_type == "hybrid":
             # Create FTS index if not already created.
             if not isinstance(self._table, lancedb.db.LanceTable):
+                utils.logger.critical("self._table is None in LanceDBVectorStore.query()")
                 raise ValueError("FTS index creation not supported for LanceDB Cloud.")
             if self._fts_index is None:
-                self._fts_index = self._table.create_fts_index(self.text_key, replace=True)
+                self._fts_index = self._table.create_fts_index(self.text_key, replace=True, use_tantivy=False)
 
             # Execute vector search.
             vector_query = self._table.search(query=query.query_embedding, vector_column_name=self.vector_column_name)
@@ -382,9 +385,11 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             results = combined_results
 
         else:
+            utils.logger.critical(f"Invalid query type: {query_type}")
             raise ValueError(f"Invalid query type: {query_type}")
 
         if len(results) == 0:
+            utils.logger.info("Query results are empty.")
             raise Warning("Query results are empty.")
 
         nodes = []

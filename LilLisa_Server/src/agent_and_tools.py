@@ -345,7 +345,11 @@ def answer_from_document_retrieval(
             response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
         response += "\n\nAfter searching through the documentation database, this was found:\n"
 
-    nodes = document_retriever.retrieve(query)
+    try:
+        nodes = document_retriever.retrieve(query)
+    except Warning:
+        return "No relevant documents were found for this query."
+
     reranked_nodes = RERANKER.postprocess_nodes(nodes=nodes, query_str=query)[:10]
     useful_links = list(dict.fromkeys([node.metadata["github_url"] for node in reranked_nodes]))[:3]
     chunks = "\n\n".join(f"{node.text}" for node in reranked_nodes)
