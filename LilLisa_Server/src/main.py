@@ -954,24 +954,22 @@ async def _run_rebuild_docs_task():
                 all_nodes = new_nodes
 
                 try:
-                    if product in db.table_names():
-                        utils.logger.info(f"Background task: Dropping existing table {product}.")
-                        db.drop_table(product)
+                    product_new = f'{product}_new'
 
                     # Ensure there's at least one node before creating/inserting
                     if all_nodes:
-                        utils.logger.info(f"Background task: Creating/updating index for {product} with {len(all_nodes)} nodes.")
+                        utils.logger.info(f"Background task: Creating/updating index for {product_new} with {len(all_nodes)} nodes.")
                         
                         # just create the table first with a single row
                         vector_store = LanceDBVectorStore(connection=db, 
                                                         uri="lancedb", 
-                                                        table_name=product, 
+                                                        table_name=product_new, 
                                                         query_type="hybrid")
                         storage_context = StorageContext.from_defaults(vector_store=vector_store)
                         index = VectorStoreIndex(nodes=all_nodes[:1], storage_context=storage_context)
 
                         # THIS IS IMPORTANT! ONLY WAY TO ASSOCIATE THE TABLE WITH THE INDEX
-                        table = db.open_table(product)
+                        table = db.open_table(product_new)
                         vector_store = LanceDBVectorStore.from_table(table)
                         index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
 
@@ -989,16 +987,30 @@ async def _run_rebuild_docs_task():
                                 current_batch_num = (i // batch_size) + 1
                                 utils.logger.info(f"Background task: Inserted batch {current_batch_num}/{num_batches}")
 
-                        table = db.open_table(product)
+                        table = db.open_table(product_new)
                         row_count = table.count_rows()
                         if row_count != len(all_nodes):
-                            utils.logger.critical(f"Table '{product}' row count ({row_count}) does not match node count ({len(all_nodes)}).")
+                            utils.logger.critical(f"Table '{product_new}' row count ({row_count}) does not match node count ({len(all_nodes)}).")
+                            return
 
-                        utils.logger.info(f"Background task: Successfully inserted/updated nodes for {product}.") # Changed log message
+                        # Now drop the old database
+                        if product in db.table_names():
+                            utils.logger.info(f"Background task: Dropping existing table {product}.")
+                            db.drop_table(product)
+                        # if os.path.exists(product_path):
+                        #     shutil.rmtree(product_path)  # Remove existing table if it exists
+                        # And rename <product_new>.lance database folder to <product>.lance
+                        productnew_path = os.path.join(LANCEDB_FOLDERPATH, f"{product_new}.lance")
+                        product_path = os.path.join(LANCEDB_FOLDERPATH, f"{product}.lance")
+                        shutil.move(productnew_path, product_path)  # Rename the table directory
+                        utils.logger.info(f"Background task: Renamed table from {product_new} to {product}")
+
+                        utils.logger.info(f"Background task: Successfully inserted/updated nodes for {product_new}.") # Changed log message
                     else:
-                         utils.logger.warning(f"Background task: No nodes to index for product {product}.")
-                except Exception as db_exc:
-                    utils.logger.critical(f"Background task: Could not rebuild table {product}. Error: {db_exc}", exc_info=True)
+                         utils.logger.warning(f"Background task: No nodes to index for product {product_new}.")
+                except Exception:
+                    utils.logger.exception(f"Background task: Could not rebuild table {product_new}")
+                    return
 
         result_message = f"Rebuilt DB successfully!{failed_clone_messages}" # This message is now only logged
         utils.logger.info(f"Background task: Documentation rebuild finished. Result: {result_message}")
@@ -1006,9 +1018,11 @@ async def _run_rebuild_docs_task():
     except jwt.exceptions.InvalidSignatureError:
         # Log the authentication error specifically
         utils.logger.error("Background task: Failed signature verification for rebuild_docs. Unauthorized.")
-    except Exception as exc:
+        return
+    except Exception:
         # Log any other errors during the rebuild process
-        utils.logger.critical(f"Background task: Documentation rebuild failed unexpectedly. Error: {exc}", exc_info=True)
+        utils.logger.exception("Background task: Documentation rebuild failed unexpectedly")
+        return
 
     create_docdbs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
@@ -1026,7 +1040,7 @@ async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) ->
     """
     jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
     background_tasks.add_task(_run_rebuild_docs_task)
-    return "Documentation rebuild initiated. Please wait for ~10 minutes before using Rocknbot"
+    return "Documentation rebuild initiated. Changes will become effective in ~1 hour. Until then, Rocknbot will continue to answer questions using current docs"
 
 
 @app.get("/", response_class=HTMLResponse)
