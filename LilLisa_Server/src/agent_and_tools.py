@@ -132,15 +132,6 @@ else:
     utils.logger.critical("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
     raise ValueError("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
 
-lance_db = None
-iddm_table = None
-ida_table = None
-iddm_qa_pairs_table = None
-ida_qa_pairs_table = None
-iddm_vector_store = None
-ida_vector_store = None
-iddm_qa_pairs_vector_store = None
-ida_qa_pairs_vector_store = None
 IDDM_INDEX = None
 IDDM_QA_PAIRS_INDEX = None
 IDA_INDEX = None
@@ -151,9 +142,6 @@ IDDM_QA_PAIRS_RETRIEVER = None
 IDA_QA_PAIRS_RETRIEVER = None
 def create_docdbs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
     """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
-    global lance_db
-    global iddm_table, ida_table
-    global iddm_vector_store, ida_vector_store
     global IDDM_RETRIEVER, IDA_RETRIEVER
     global IDDM_INDEX, IDA_INDEX
 
@@ -169,9 +157,6 @@ def create_docdbs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> Non
 
 def create_qa_pairs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
     """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
-    global lance_db
-    global iddm_qa_pairs_table, ida_qa_pairs_table
-    global iddm_qa_pairs_vector_store, ida_qa_pairs_vector_store
     global IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
     global IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
 

@@ -239,6 +239,18 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         if not nodes:
             _logger.debug("No nodes to add. Skipping the database operation.")
             return []
+        data, ids = self.get_data_from_nodes(nodes)
+        if self._table is None:
+            self._table = self._connection.create_table(self._table_name, data, mode=self.mode)
+        else:
+            if self.api_key is None:
+                self._table.add(data, mode="append")
+            else:
+                self._table.add(data)
+        self._fts_index = None  # reset FTS index
+        return ids
+
+    def get_data_from_nodes(self, nodes: List[BaseNode]) -> tuple[list, list]:
         data = []
         ids = []
         for node in nodes:
@@ -254,15 +266,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             }
             data.append(append_data)
             ids.append(node.node_id)
-        if self._table is None:
-            self._table = self._connection.create_table(self._table_name, data, mode=self.mode)
-        else:
-            if self.api_key is None:
-                self._table.add(data, mode="append")
-            else:
-                self._table.add(data)
-        self._fts_index = None  # reset FTS index
-        return ids
+        return data,ids
 
     def delete(self, ref_doc_id: str, **delete_kwargs: Any) -> None:
         """

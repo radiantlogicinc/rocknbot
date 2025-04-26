@@ -21,6 +21,7 @@ _wait30s:
 
 condaenv:
 	conda env create -f environment.yml
+	conda init bash
 	conda activate ${APP_NAMESPACE}
 
 _lint:

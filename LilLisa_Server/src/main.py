@@ -283,18 +283,14 @@ async def init_lance_databases():
         utils.logger.exception("Failed to create LanceDB folder at %s", LANCEDB_FOLDERPATH)
         raise
 
-    startup_encrypted_key = jwt.encode({"some": "payload"}, AUTHENTICATION_KEY, algorithm="HS256")
-
     try:
         await _run_rebuild_docs_task()
-        utils.logger.info("Automatic documentation rebuild task completed successfully during startup.")
     except Exception as rebuild_exc:
         utils.logger.critical("Automatic documentation rebuild failed during startup: %s", rebuild_exc, exc_info=True)
         raise RuntimeError("Failed to automatically rebuild documentation during startup.") from rebuild_exc
 
     try:
         await _run_update_golden_qa_pairs_task()
-        utils.logger.info("Rebuilt golden QA pairs for completed successfully during startup.")
     except Exception as rebuild_exc:
         utils.logger.critical("Golden QA pairs rebuild failed during startup: %s", rebuild_exc, exc_info=True)
         raise RuntimeError("Golden QA pairs rebuild failed during startup.") from rebuild_exc
@@ -712,15 +708,16 @@ async def _run_update_golden_qa_pairs_task():
             splitter = SentenceSplitter(chunk_size=10000) # QA pairs are typically short, large chunk size is fine
             nodes = splitter.get_nodes_from_documents(documents=documents, show_progress=False) # Turn off progress for background task
 
-            # Note: Consider if Settings need to be set per request/task
-            Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-large") 
-
             vector_store = LanceDBVectorStore(uri="lancedb", table_name=table_name, query_type="hybrid")
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             utils.logger.info(f"Background task: Creating/updating index for {table_name} with {len(nodes)} nodes.")
-            index = VectorStoreIndex(nodes=nodes, storage_context=storage_context)
-            _ = index.as_retriever(similarity_top_k=8)
+            _ = VectorStoreIndex(nodes=nodes, storage_context=storage_context)
             utils.logger.info(f"Background task: Successfully inserted {len(nodes)} QA pairs into DB for {product}.")
+
+            table = db.open_table(table_name)
+            row_count = table.count_rows()
+            if row_count != len(nodes):
+                utils.logger.critical(f"Table '{table_name}' row count ({row_count}) does not match node count ({len(nodes)}).")
         except jwt.exceptions.InvalidSignatureError:
             utils.logger.error(f"Background task: Failed signature verification for update_golden_qa_pairs ({product}). Unauthorized.")
         except Exception as exc:
@@ -816,7 +813,6 @@ async def _run_rebuild_docs_task():
     """Contains the core logic for rebuilding docs, run as a background task."""
     try:
         utils.logger.info("Background task: Starting documentation rebuild.")
-        db = lancedb.connect(LANCEDB_FOLDERPATH)
         failed_clone_messages = ""
         product_repos_dict = {
             "IDDM": [
@@ -882,6 +878,7 @@ async def _run_rebuild_docs_task():
             "github_url",
         ]
 
+        db = lancedb.connect(LANCEDB_FOLDERPATH)
         for product, repo_branches in product_repos_dict.items():
             with tempfile.TemporaryDirectory() as temp_dir:
                 product_dir = os.path.join(temp_dir, product)
@@ -956,25 +953,50 @@ async def _run_rebuild_docs_task():
                         new_nodes.append(node)
                 all_nodes = new_nodes
 
-                Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-large") # Note: Consider if this needs to be set per request/task
                 try:
                     if product in db.table_names():
                         utils.logger.info(f"Background task: Dropping existing table {product}.")
                         db.drop_table(product)
 
-                    vector_store = LanceDBVectorStore(uri="lancedb", table_name=product, query_type="hybrid")
-                    storage_context = StorageContext.from_defaults(vector_store=vector_store)
                     # Ensure there's at least one node before creating/inserting
                     if all_nodes:
                         utils.logger.info(f"Background task: Creating/updating index for {product} with {len(all_nodes)} nodes.")
+                        
+                        # just create the table first with a single row
+                        vector_store = LanceDBVectorStore(connection=db, 
+                                                        uri="lancedb", 
+                                                        table_name=product, 
+                                                        query_type="hybrid")
+                        storage_context = StorageContext.from_defaults(vector_store=vector_store)
                         index = VectorStoreIndex(nodes=all_nodes[:1], storage_context=storage_context)
-                        if len(all_nodes) > 1:
-                            index.insert_nodes(all_nodes[1:])
-                        _ = index.as_retriever(similarity_top_k=50)
+
+                        # THIS IS IMPORTANT! ONLY WAY TO ASSOCIATE THE TABLE WITH THE INDEX
+                        table = db.open_table(product)
+                        vector_store = LanceDBVectorStore.from_table(table)
+                        index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+
+                        # Insert remaining nodes in batches
+                        remaining_nodes = all_nodes[1:]
+                        batch_size = 1000
+                        num_batches = (len(remaining_nodes) + batch_size - 1) // batch_size
+                        
+                        if remaining_nodes:
+                            utils.logger.info(f"Background task: Inserting {len(remaining_nodes)} remaining nodes in {num_batches} batches of size {batch_size}...")
+                            for i in range(0, len(remaining_nodes), batch_size):
+                                batch = remaining_nodes[i:i + batch_size]
+                                index.insert_nodes(batch)
+
+                                current_batch_num = (i // batch_size) + 1
+                                utils.logger.info(f"Background task: Inserted batch {current_batch_num}/{num_batches}")
+
+                        table = db.open_table(product)
+                        row_count = table.count_rows()
+                        if row_count != len(all_nodes):
+                            utils.logger.critical(f"Table '{product}' row count ({row_count}) does not match node count ({len(all_nodes)}).")
+
                         utils.logger.info(f"Background task: Successfully inserted/updated nodes for {product}.") # Changed log message
                     else:
                          utils.logger.warning(f"Background task: No nodes to index for product {product}.")
-
                 except Exception as db_exc:
                     utils.logger.critical(f"Background task: Could not rebuild table {product}. Error: {db_exc}", exc_info=True)
 
