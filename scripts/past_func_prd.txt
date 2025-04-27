@@ -1,0 +1,97 @@
+<context>
+# Product Requirements Document: Lil Lisa RAG Application
+
+## 1. Overview
+
+Lil Lisa is a Retrieval-Augmented Generation (RAG) application designed to provide question-answering capabilities based on personalized and organizational data. It consists of a core FastAPI backend server, a Slack integration app, and a web application frontend. The system uses LanceDB for vector storage and LlamaIndex with OpenAI models for query processing and response generation via a ReAct agent.
+
+## 2. Components
+
+### 2.1. LilLisa_Server (FastAPI Backend)
+
+*   **Purpose:** Core AI engine providing RAG capabilities. Handles data ingestion, indexing, retrieval, and AI-powered response generation. Exposes API endpoints for frontend clients.
+*   **Technology Stack:** Python, FastAPI, LlamaIndex, LanceDB, LiteLLM (for OpenAI models like GPT-4), OpenAI Embeddings, GitPython, JWT.
+*   **Key Features:**
+    *   **Q&A Processing:** Ingests natural language queries, retrieves relevant context from vector stores (documentation and QA pairs), and generates answers using a ReAct agent. Differentiates processing based on "product" context (e.g., IDDM, IDA).
+    *   **Streaming API:** Provides a streaming endpoint (`/invoke_stream_html/`) for real-time response generation, suitable for web interfaces. Converts markdown to HTML chunks.
+    *   **Non-Streaming API:** Provides a standard endpoint (`/invoke/`) returning the full response text, suitable for Slack integration.
+    *   **Conversation Context:** Manages conversation history per session ID using `LilLisaServerContext`.
+    *   **Feedback Recording:** Stores user/expert endorsements (+1/-1 reactions) along with conversation context (`/record_endorsement/`) locally for later analysis and potential fine-tuning.
+    *   **Knowledge Base Management (Admin APIs - JWT Secured):**
+        *   Retrieves golden QA pairs from a specific GitHub repository (`/get_golden_qa_pairs/`).
+        *   Updates/re-ingests golden QA pairs from the GitHub repo into the LanceDB QA vector store (`/update_golden_qa_pairs/`). Uses `IngestionPipeline`, `MarkdownNodeParser`.
+        *   Retrieves recorded/endorsed conversations stored locally, zipped (`/get_conversations/`).
+        *   Rebuilds the entire documentation vector store from a documentation source (likely GitHub repo) (`/rebuild_docs/`). Deletes existing LanceDB data, clones/pulls repo, uses `IngestionPipeline`, `MarkdownReader`, rebuilds `VectorStoreIndex`.
+    *   **Configuration:** Highly configurable via environment variables (`lillisa_server.env`).
+
+### 2.2. lil-lisa (Slack Integration - "rocknbot")
+
+*   **Purpose:** Acts as a bridge between Slack users and the `LilLisa_Server`. Handles Slack events, commands, and formats interactions appropriately.
+*   **Technology Stack:** Python, Slack Bolt SDK (`slack_bolt`), JWT.
+*   **Key Features:**
+    *   **Message Handling:** Listens for messages mentioning `@rocknbot` or in DMs/small threads (`message` event).
+    *   **Q&A Interaction:** Sends user queries to the `LilLisa_Server` (`/invoke/` endpoint), determining "product" (IDDM/IDA) based on the channel. Posts the server's response back to the Slack thread. Handles expert answers prefixed with `#answer`.
+    *   **Reaction Handling:** Listens for `+1`/`-1` reactions on bot messages (`reaction_added` event). Sends endorsement data to the server (`/record_endorsement/`). Handles `sos` reaction to notify an expert user.
+    *   **Admin Slash Commands (Requires Admin Channel Membership):**
+        *   `/get_golden_qa_pairs`: Triggers server API call, sends results (`qa_pairs.md`) via DM.
+        *   `/update_golden_qa_pairs`: Triggers server API call to re-ingest QA pairs.
+        *   `/get_conversations [user|expert]`: Triggers server API call, sends results (`conversations.zip`) via DM.
+        *   `/rebuild_docs`: Triggers server API call to rebuild documentation index.
+    *   **Authentication:** Uses JWT to authenticate admin command requests to the server.
+    *   **Configuration:** Configured via environment variables (`lil-lisa.env`).
+
+### 2.3. lil-lisa-web (Web Frontend)
+
+*   **Purpose:** Provides a web-based interface for interacting with the `LilLisa_Server`.
+*   **Technology Stack:** Python, Flask, HTML/CSS/JavaScript (implied via `templates/`), Requests library.
+*   **Key Features:**
+    *   **Chat Interface:** Renders a chat UI (`index.html`).
+    *   **Streaming Q&A:** Sends user queries to its own backend endpoint (`/api/chat_cot`). This endpoint proxies the request to the `LilLisa_Server`'s streaming endpoint (`/invoke_stream_html/`) and streams the HTML response chunks back to the browser. Generates session IDs if not provided.
+    *   **Feedback Buttons:** Provides UI elements (e.g., thumbs up/down) that call its own backend endpoints (`/api/thumbsup`, `/api/thumbsdown`). These endpoints proxy the request to the `LilLisa_Server`'s `/record_endorsement/` endpoint.
+    *   **Configuration:** Reads server URL from environment variables (`lil-lisa-web.env`).
+
+## 3. Non-Functional Requirements
+
+*   **Deployment:** Components are designed to be run concurrently. Server mentions potential AWS Lambda deployment. Slack and Web apps likely run as standard Python applications or containers.
+*   **Security:** Admin functions in the Slack app and corresponding server endpoints are secured via JWT and Slack channel membership checks.
+*   **Scalability:** Use of streaming APIs suggests consideration for handling potentially long AI responses efficiently. Vector database (LanceDB) provides fast retrieval.
+*   **Maintainability:** Code is separated into distinct components (Server, Slack, Web). Configuration is externalized to `.env` files. Uses standard Python project structures (`src/`, `pyproject.toml`, `environment.yml`).
+
+
+# User Experience  
+[Describe the user journey and experience. Include:
+- User personas
+- Key user flows
+- UI/UX considerations]
+</context>
+<PRD>
+# Technical Architecture  
+[Outline the technical implementation details:
+- System components
+- Data models
+- APIs and integrations
+- Infrastructure requirements]
+
+# Development Roadmap  
+[Break down the development process into phases:
+- MVP requirements
+- Future enhancements
+- Do not think about timelines whatsoever -- all that matters is scope and detailing exactly what needs to be build in each phase so it can later be cut up into tasks]
+
+# Logical Dependency Chain
+[Define the logical order of development:
+- Which features need to be built first (foundation)
+- Getting as quickly as possible to something usable/visible front end that works
+- Properly pacing and scoping each feature so it is atomic but can also be built upon and improved as development approaches]
+
+# Risks and Mitigations  
+[Identify potential risks and how they'll be addressed:
+- Technical challenges
+- Figuring out the MVP that we can build upon
+- Resource constraints]
+
+# Appendix  
+[Include any additional information:
+- Research findings
+- Technical specifications]
+</PRD>

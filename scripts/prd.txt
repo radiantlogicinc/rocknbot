@@ -1,0 +1,51 @@
+## 4. Notes For Future Enhancements
+
+### 4.1 Feature todos
+Conversation analysis - IDDM and IDA
+    Retrieval issues:
+    1. 0 chunks were retrieved. Could be:
+        Document issue (missing content)
+        Badly formulated query
+        Complex query requiring detective work (Use multihop retrieval?)
+    2. Relevant chunks were not retrieved.
+        Embedding issue (caused by embedding after chunking)
+        Badly formulated query
+        Content spread across multiple documents
+    -----
+    Reranker issue
+    1. Irrelevant chunks in top 10
+    -----
+    Generation issues: LLM needs to be good at ignoring irrelevant chunks (use ReFT?)
+    1. Incorrect answer - complete hallucination, completely irrelevant. Did not understand query at all.
+    2. Incomplete answer - correct, but missing crucial information that was retrieved but not used
+    3. Correct answer but with additional irrelevant content
+
+Send the 10 chunks from which the answer was generated, back with the answer
+    How to format this nicely? "Top 10 Retrieved Document Chunks:" section?
+    Allow user to thumbs up/down individual chunks (checkbox to check/uncheck all chunks? How to do this in Slack?)
+
+High pri tasks:
+    Performance improvement "experiments" - Different reranker library, Stream all LLM output
+    Late embedding - will need to build a test dataset of queries where no answer or irrelevant answer
+    Retrying with a larger "reasoning" model if user gives a thumbs-down AND the answer is not "I cannot find an answer..." (Hypothesis: this might remedy some "incorrect" or "irrelevant" answers that are LLM generation issue).
+        Could also try using Hyde in case it is a badly formulated query issue
+    Integrating golden QA pairs with current information retrieval process for better answers based on golden QA pairs
+    Building smoke tests to qualify a release - a set of "hard" questions that the chatbot had previously failed on
+    Login and conversation history
+    Automatically adding to the golden QA pairs repo if experts thumbs-up their own reply in Slack
+        Automatically build a golden QA pair. Expert can always review and tweak the QA in the repo.
+        Can we do this in the web app too? (requires login and tagging expert email id)
+    Multimodal support - retrieve images and embed in answers
+
+Additional content:
+    Summaries of #techsupport content with PII redacted
+    Agent that searches whitelisted web sites content
+    Summaries from ZenDesk content with PII redacted?
+
+### 4.2 - DevOps todos
+* Lil Lisa ECS deployment - Point to the admin channels, not the main channels (Freddy takes care of staging, there's no prod). How to configure Slack to support multiple Slackbots subscribed to Slack?
+* LanceDb - should not be part of Docker. Rebuild LanceDb's at deployment time. Server app should be able to execute init_docs() with an empty db. if db exists, do nothing. if no db, call rebuild_docs()
+* Speedict - current implementation does not support concurrent slackbots. Switch to Redis or some other open source redis clone that is faster (IMDB). Support key/value, and in-memory cache.
+* Size of docker images - optimize!
+* Establishing a workflow for continuous improvement on some metric using eval/observability framework(?) and setting up a process, and the UX to go along with it. Track thumbs up/down, type of issue with answer etc. Need good metrics!
+* Switch to GPU to speed up reranking

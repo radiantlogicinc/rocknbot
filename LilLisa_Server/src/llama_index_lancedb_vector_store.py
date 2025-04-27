@@ -36,6 +36,8 @@ from llama_index.vector_stores.lancedb.util import sql_operator_mapper
 
 import lancedb
 
+from src import utils
+
 _logger = logging.getLogger(__name__)
 
 
@@ -164,11 +166,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                 if "db://" not in uri:
                     object.__setattr__(self, "_connection", lancedb.connect(uri))
                     warnings.warn("api key provided with local uri. The data will be stored locally")
-                object.__setattr__(
-                    self,
-                    "_connection",
-                    lancedb.connect(uri, api_key=api_key or os.getenv("LANCE_API_KEY"), region=region),
-                )
+                object.__setattr__(self, "_connection", lancedb.connect(uri, api_key=api_key or os.getenv("LANCE_API_KEY"), region=region))
 
         if table is not None:
             try:
@@ -176,9 +174,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
                 object.__setattr__(self, "_table", table)
                 object.__setattr__(self, "_table_name", table.name if hasattr(table, "name") else "remote_table")
             except AssertionError:
-                raise ValueError(
-                    "`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object."
-                )
+                raise ValueError("`table` has to be a lancedb.db.LanceTable or lancedb.remote.table.RemoteTable object.")
         else:
             if self._table_exists():
                 object.__setattr__(self, "_table", self._connection.open_table(table_name))
@@ -243,6 +239,18 @@ class LanceDBVectorStore(BasePydanticVectorStore):
         if not nodes:
             _logger.debug("No nodes to add. Skipping the database operation.")
             return []
+        data, ids = self.get_data_from_nodes(nodes)
+        if self._table is None:
+            self._table = self._connection.create_table(self._table_name, data, mode=self.mode)
+        else:
+            if self.api_key is None:
+                self._table.add(data, mode="append")
+            else:
+                self._table.add(data)
+        self._fts_index = None  # reset FTS index
+        return ids
+
+    def get_data_from_nodes(self, nodes: List[BaseNode]) -> tuple[list, list]:
         data = []
         ids = []
         for node in nodes:
@@ -258,15 +266,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             }
             data.append(append_data)
             ids.append(node.node_id)
-        if self._table is None:
-            self._table = self._connection.create_table(self._table_name, data, mode=self.mode)
-        else:
-            if self.api_key is None:
-                self._table.add(data, mode="append")
-            else:
-                self._table.add(data)
-        self._fts_index = None  # reset FTS index
-        return ids
+        return data,ids
 
     def delete(self, ref_doc_id: str, **delete_kwargs: Any) -> None:
         """
@@ -348,9 +348,7 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             lance_query = self._table.search(query=_query, vector_column_name=self.vector_column_name)
             if hasattr(lance_query, "metric"):
                 lance_query = lance_query.metric("cosine")
-            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(
-                where, prefilter=True
-            )
+            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
             if hasattr(lance_query, "nprobes"):
                 lance_query.nprobes(self.nprobes)
             results = lance_query.to_pandas()
@@ -360,25 +358,22 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             lance_query = self._table.search(query=_query, vector_column_name=self.vector_column_name)
             if hasattr(lance_query, "metric"):
                 lance_query = lance_query.metric("cosine")
-            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(
-                where, prefilter=True
-            )
+            lance_query = lance_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
             results = lance_query.to_pandas()
 
         elif query_type == "hybrid":
             # Create FTS index if not already created.
             if not isinstance(self._table, lancedb.db.LanceTable):
+                utils.logger.critical("self._table is None in LanceDBVectorStore.query()")
                 raise ValueError("FTS index creation not supported for LanceDB Cloud.")
             if self._fts_index is None:
-                self._fts_index = self._table.create_fts_index(self.text_key, replace=True)
+                self._fts_index = self._table.create_fts_index(self.text_key, replace=True, use_tantivy=False)
 
             # Execute vector search.
             vector_query = self._table.search(query=query.query_embedding, vector_column_name=self.vector_column_name)
             if hasattr(vector_query, "metric"):
                 vector_query = vector_query.metric("cosine")
-            vector_query = vector_query.limit(query.similarity_top_k * self.overfetch_factor).where(
-                where, prefilter=True
-            )
+            vector_query = vector_query.limit(query.similarity_top_k * self.overfetch_factor).where(where, prefilter=True)
             if hasattr(vector_query, "nprobes"):
                 vector_query.nprobes(self.nprobes)
             vector_results = vector_query.to_pandas()
@@ -394,9 +389,11 @@ class LanceDBVectorStore(BasePydanticVectorStore):
             results = combined_results
 
         else:
+            utils.logger.critical(f"Invalid query type: {query_type}")
             raise ValueError(f"Invalid query type: {query_type}")
 
         if len(results) == 0:
+            utils.logger.info("Query results are empty.")
             raise Warning("Query results are empty.")
 
         nodes = []

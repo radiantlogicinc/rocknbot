@@ -120,11 +120,6 @@ else:
     utils.logger.critical("LANCEDB_FOLDERPATH not found in lillisa_server.env")
     raise ValueError("LANCEDB_FOLDERPATH not found in lillisa_server.env")
 
-if not os.path.exists(lancedb_folderpath):
-    traceback.print_exc()
-    utils.logger.critical("%s not found", lancedb_folderpath)
-    raise NotImplementedError(f"{lancedb_folderpath} not found")
-
 if iddm_product_versions := lillisa_server_env["IDDM_PRODUCT_VERSIONS"]:
     IDDM_PRODUCT_VERSIONS = str(iddm_product_versions).split(", ")
 else:
@@ -139,33 +134,48 @@ else:
     utils.logger.critical("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
     raise ValueError("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
 
+IDDM_INDEX = None
+IDDM_QA_PAIRS_INDEX = None
+IDA_INDEX = None
+IDA_QA_PAIRS_INDEX = None
+IDDM_RETRIEVER = None
+IDA_RETRIEVER = None
+IDDM_QA_PAIRS_RETRIEVER = None
+IDA_QA_PAIRS_RETRIEVER = None
+def create_docdbs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
+    """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
+    global IDDM_RETRIEVER, IDA_RETRIEVER
+    global IDDM_INDEX, IDA_INDEX
 
-# Establish connection to LanceDB
-db = lancedb.connect(lancedb_folderpath)
-Settings.embed_model = OpenAIEmbedding(
-    model="text-embedding-3-large",
-    retry_on_ratelimit=True,
-    max_retries=5,
-    backoff_factor=2.0,
-    embed_batch_size=4  # Default is 10, reducing to spread out API calls
-)
-iddm_table = db.open_table("IDDM")
-ida_table = db.open_table("IDA")
-iddm_qa_pairs_table = db.open_table("IDDM_QA_PAIRS")
-ida_qa_pairs_table = db.open_table("IDA_QA_PAIRS")
-iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
-ida_vector_store = LanceDBVectorStore.from_table(ida_table)
-iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
-ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
-IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
-IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
-IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
-IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
-IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
-IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
-IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
-IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+    lance_db = lancedb.connect(lancedb_folderpath)
+    iddm_table = lance_db.open_table("IDDM")
+    ida_table = lance_db.open_table("IDA")
+    iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
+    ida_vector_store = LanceDBVectorStore.from_table(ida_table)
+    IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
+    IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
+    IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
+    IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
 
+def create_qa_pairs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
+    """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
+    global IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
+    global IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
+
+    lance_db = lancedb.connect(lancedb_folderpath)
+    iddm_qa_pairs_table = lance_db.open_table("IDDM_QA_PAIRS")
+    ida_qa_pairs_table = lance_db.open_table("IDA_QA_PAIRS")
+    iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
+    ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
+    IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
+    IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
+    IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+    IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+
+def create_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
+    """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
+    create_docdbs_lancedb_retrievers_and_indices(lancedb_folderpath)
+    create_qa_pairs_lancedb_retrievers_and_indices(lancedb_folderpath)
 
 class PRODUCT(str, Enum):
     """Product"""
@@ -181,21 +191,38 @@ class PRODUCT(str, Enum):
         raise ValueError(f"{product} does not exist")
 
 
-def update_retriever(retriever_name, new_retriever):
-    """
-    Updates the reference to the appropriate retriever after "rebuild_docs" or "update_golden_qa_pairs" is called.
-    """
-    global IDDM_RETRIEVER, IDA_RETRIEVER, IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
-    if retriever_name == "IDDM":
-        IDDM_RETRIEVER = new_retriever
-    elif retriever_name == "IDA":
-        IDA_RETRIEVER = new_retriever
-    elif retriever_name == "IDDM_QA_PAIRS":
-        IDDM_QA_PAIRS_RETRIEVER = new_retriever
-    elif retriever_name == "IDA_QA_PAIRS":
-        IDA_QA_PAIRS_RETRIEVER = new_retriever
-    else:
-        raise ValueError(f"{retriever_name} does not exist")
+# def update_retrievers(retriever_name, new_retriever):
+#     """
+#     Updates the reference to the appropriate retriever after "rebuild_docs" or "update_golden_qa_pairs" is called.
+#     """
+#     global IDDM_RETRIEVER, IDA_RETRIEVER, IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
+#     if retriever_name == "IDDM":
+#         IDDM_RETRIEVER = new_retriever
+#     elif retriever_name == "IDA":
+#         IDA_RETRIEVER = new_retriever
+#     elif retriever_name == "IDDM_QA_PAIRS":
+#         IDDM_QA_PAIRS_RETRIEVER = new_retriever
+#     elif retriever_name == "IDA_QA_PAIRS":
+#         IDA_QA_PAIRS_RETRIEVER = new_retriever
+#     else:
+#         raise ValueError(f"{retriever_name} does not exist")
+
+
+# def update_indices(retriever_name, new_index):
+#     """
+#     Updates the reference to the appropriate indices after "rebuild_docs" or "update_golden_qa_pairs" is called.
+#     """
+#     global IDDM_INDEX, IDA_INDEX, IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
+#     if retriever_name == "IDDM":
+#         IDDM_INDEX = new_index
+#     elif retriever_name == "IDA":
+#         IDA_INDEX = new_index
+#     elif retriever_name == "IDDM_QA_PAIRS":
+#         IDDM_QA_PAIRS_INDEX = new_index
+#     elif retriever_name == "IDA_QA_PAIRS":
+#         IDA_QA_PAIRS_INDEX = new_index
+#     else:
+#         raise ValueError(f"{retriever_name} does not exist")
 
 
 def handle_user_answer(answer: str) -> str:
@@ -370,7 +397,11 @@ def answer_from_document_retrieval(
             response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
         response += "\n\nAfter searching through the documentation database, this was found:\n"
 
-    nodes = document_retriever.retrieve(query)
+    try:
+        nodes = document_retriever.retrieve(query)
+    except Warning:
+        return "No relevant documents were found for this query."
+
     reranked_nodes = RERANKER.postprocess_nodes(nodes=nodes, query_str=query)[:10]
     useful_links = list(dict.fromkeys([node.metadata["github_url"] for node in reranked_nodes]))[:3]
     raw_chunks = "\n\n".join(f"{node.text}" for node in reranked_nodes)

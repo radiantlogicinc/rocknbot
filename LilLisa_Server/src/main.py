@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 import zipfile
 from contextlib import asynccontextmanager
@@ -14,7 +15,7 @@ import jwt
 import litellm
 import tiktoken
 import uvicorn
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
@@ -51,7 +52,9 @@ from src.agent_and_tools import (
     get_matching_versions,
     handle_user_answer,
     improve_query,
-    update_retriever,
+    create_lancedb_retrievers_and_indices,
+    create_docdbs_lancedb_retrievers_and_indices,
+    create_qa_pairs_lancedb_retrievers_and_indices,
 )
 from src.lillisa_server_context import LOCALE, LilLisaServerContext
 from src.llama_index_lancedb_vector_store import LanceDBVectorStore
@@ -101,7 +104,7 @@ class LiteLLM(LLM):
             return ChatResponse(message=ChatMessage(role="assistant", content=self.last_thought))
         except Exception as e:
             utils.logger.error("Error in LiteLLM completion: %s", str(e))
-            raise ValueError(f"Failed to generate response: {str(e)}")
+            raise ValueError(f"Failed to generate response: {str(e)}") from e
 
     def complete(self, prompt: str, **kwargs: Any) -> str:
         messages = [ChatMessage(role="user", content=prompt)]
@@ -217,11 +220,6 @@ async def lifespan(_app: FastAPI):
     with open(REACT_AGENT_PROMPT, "r", encoding="utf-8") as file:
         globals()["REACT_AGENT_PROMPT"] = file.read()
 
-    # Validate LanceDB folder path
-    if not os.path.exists(LANCEDB_FOLDERPATH):
-        utils.logger.critical("%s not found", LANCEDB_FOLDERPATH)
-        raise NotImplementedError(f"{LANCEDB_FOLDERPATH} not found")
-
     # Load max iterations
     if iterations := lillisa_server_env.get("MAX_ITERATIONS"):
         globals()["MAX_ITERATIONS"] = int(iterations)
@@ -259,10 +257,43 @@ async def lifespan(_app: FastAPI):
     else:
         utils.logger.critical("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
         raise ValueError("LLM_API_KEY_FILEPATH not found in lillisa_server.env")
+
+    Settings.embed_model = OpenAIEmbedding(
+        model="text-embedding-3-large",
+        retry_on_ratelimit=True,
+        max_retries=5,
+        backoff_factor=2.0,
+        embed_batch_size=4  # Default is 10, reducing to spread out API calls
+    )
+
+    # Validate LanceDB folder path
+    if not os.path.exists(LANCEDB_FOLDERPATH):
+        await init_lance_databases()
+    else:
+        create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+
     yield
     os.unsetenv("OPENAI_API_KEY")
     litellm.api_key = None
 
+async def init_lance_databases():
+    try:
+        os.makedirs(LANCEDB_FOLDERPATH, exist_ok=True)
+    except Exception:
+        utils.logger.exception("Failed to create LanceDB folder at %s", LANCEDB_FOLDERPATH)
+        raise
+
+    try:
+        await _run_rebuild_docs_task()
+    except Exception as rebuild_exc:
+        utils.logger.critical("Automatic documentation rebuild failed during startup: %s", rebuild_exc, exc_info=True)
+        raise RuntimeError("Failed to automatically rebuild documentation during startup.") from rebuild_exc
+
+    try:
+        await _run_update_golden_qa_pairs_task()
+    except Exception as rebuild_exc:
+        utils.logger.critical("Golden QA pairs rebuild failed during startup: %s", rebuild_exc, exc_info=True)
+        raise RuntimeError("Golden QA pairs rebuild failed during startup.") from rebuild_exc
 
 app = FastAPI(lifespan=lifespan)
 
@@ -391,9 +422,9 @@ async def invoke_stream_html(
             # If adding the word would exceed max_length, finish the current chunk.
             if len(current_chunk) + len(word) + 1 > max_length:
                 chunks.append(current_chunk.strip())
-                current_chunk = word + " "
+                current_chunk = f"{word} "
             else:
-                current_chunk += word + " "
+                current_chunk += f"{word} "
         if current_chunk:
             chunks.append(current_chunk.strip())
         return chunks
@@ -412,28 +443,28 @@ async def invoke_stream_html(
         br_pattern = r'<br\s*/?>'
         matches = list(re.finditer(br_pattern, html_text, flags=re.IGNORECASE))
         chunks = []
-        
+
         # Handle the case with no <br> tags
         if not matches:
             return [html_text] if html_text else []
-        
+
         # Process first chunk (before first <br>)
         first_match = matches[0]
         if first_match.start() > 0:
             chunks.append(html_text[:first_match.start()])
-        
+
         # Process chunks at each <br> tag
         for i in range(len(matches)):
             current_match = matches[i]
             current_br = html_text[current_match.start():current_match.end()]
-            
+
             # If this is the last <br> tag
             if i == len(matches) - 1:
                 chunks.append(current_br + html_text[current_match.end():])
             else:
                 next_match = matches[i + 1]
                 chunks.append(current_br + html_text[current_match.end():next_match.start()])
-        
+
         return chunks
 
     async def streamer() -> AsyncGenerator[str, None]:
@@ -446,7 +477,7 @@ async def invoke_stream_html(
                 r'<a href="\1" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
                 t
             )
-        
+
             return t.replace("\n", "<br>")
 
 
@@ -593,74 +624,127 @@ async def get_golden_qa_pairs(product: str, encrypted_key: str) -> FileResponse:
         raise HTTPException(status_code=500, detail="Internal error in get_golden_qa_pairs()") from exc
 
 
+async def _run_update_golden_qa_pairs_task():
+    """Contains the core logic for updating golden QA pairs, run as a background task."""
+    for product_enum in PRODUCT:
+        product = product_enum.value
+        try:
+            utils.logger.info(f"Background task: Starting golden QA pair update for {product}.")
+
+            # Clone repo (Consider running sync git call in executor)
+            temp_qa_folder = None
+            try:
+                temp_qa_folder = tempfile.mkdtemp()
+                utils.logger.info(f"Background task: Cloning {QA_PAIRS_GITHUB_REPO_URL} into {temp_qa_folder}")
+                git.Repo.clone_from(QA_PAIRS_GITHUB_REPO_URL, temp_qa_folder)
+            except Exception as clone_exc:
+                utils.logger.error(f"Background task: Failed to clone QA pairs repo: {clone_exc}", exc_info=True)
+                if temp_qa_folder and os.path.exists(temp_qa_folder):
+                    shutil.rmtree(temp_qa_folder)
+                return # Stop execution if clone fails
+
+            filepath = f"{temp_qa_folder}/{product.lower()}_qa_pairs.md"
+
+            if not os.path.exists(filepath):
+                utils.logger.error(f"Background task: QA pairs file not found at {filepath}")
+                if os.path.exists(temp_qa_folder):
+                    shutil.rmtree(temp_qa_folder)
+                return # Stop execution if file doesn't exist
+
+            try:
+                with open(filepath, "r", encoding="utf-8") as file:
+                    file_content = file.read()
+            except Exception as read_exc:
+                utils.logger.error(f"Background task: Failed to read QA pairs file {filepath}: {read_exc}", exc_info=True)
+                if os.path.exists(temp_qa_folder):
+                    shutil.rmtree(temp_qa_folder)
+                return # Stop execution if read fails
+            finally:
+                # Clean up the temporary folder after reading or on error
+                if temp_qa_folder and os.path.exists(temp_qa_folder):
+                    utils.logger.info(f"Background task: Cleaning up temporary folder {temp_qa_folder}")
+                    shutil.rmtree(temp_qa_folder)
+
+            # Process content and update DB
+            db = lancedb.connect(LANCEDB_FOLDERPATH)
+            table_name = f"{product}_QA_PAIRS"
+            try:
+                utils.logger.info(f"Background task: Dropping existing table {table_name} if it exists.")
+                db.drop_table(table_name)
+            except Exception:
+                # This is expected if the table doesn't exist, log as info
+                utils.logger.info(f"Background task: Table {table_name} does not exist or could not be dropped, proceeding.")
+
+            qa_pairs = [pair.strip() for pair in file_content.split("# Question/Answer Pair") if pair.strip()]
+            if not qa_pairs:
+                utils.logger.warning(f"Background task: No QA pairs found in the file for {product}. Skipping DB update.")
+                return
+
+            documents = []
+            qa_pattern = re.compile(r"Question:\s*(.*?)\nAnswer:\s*(.*)", re.DOTALL)
+            product_versions = IDDM_PRODUCT_VERSIONS if product == "IDDM" else IDA_PRODUCT_VERSIONS
+            version_pattern = (
+                re.compile(r"v?\d+\.\d+", re.IGNORECASE)
+                if product == "IDDM"
+                else re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
+            )
+
+            for pair in qa_pairs:
+                if match := qa_pattern.search(pair):
+                    question, answer = match[1].strip(), match[2].strip()
+                    doc = Document(text=question)
+                    doc.metadata["answer"] = answer
+                    matched_versions = get_matching_versions(question, product_versions, version_pattern)
+                    doc.metadata["version"] = matched_versions[0] if matched_versions else "none"
+                    doc.excluded_embed_metadata_keys.extend(["version", "answer"])
+                    documents.append(doc)
+                else:
+                    utils.logger.warning(f"Background task: Could not parse QA pair: {pair[:100]}...")
+
+            if not documents:
+                utils.logger.warning(f"Background task: No valid documents could be created from QA pairs for {product}. Skipping DB update.")
+                return
+
+            splitter = SentenceSplitter(chunk_size=10000) # QA pairs are typically short, large chunk size is fine
+            nodes = splitter.get_nodes_from_documents(documents=documents, show_progress=False) # Turn off progress for background task
+
+            vector_store = LanceDBVectorStore(uri="lancedb", table_name=table_name, query_type="hybrid")
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            utils.logger.info(f"Background task: Creating/updating index for {table_name} with {len(nodes)} nodes.")
+            _ = VectorStoreIndex(nodes=nodes, storage_context=storage_context)
+            utils.logger.info(f"Background task: Successfully inserted {len(nodes)} QA pairs into DB for {product}.")
+
+            table = db.open_table(table_name)
+            row_count = table.count_rows()
+            if row_count != len(nodes):
+                utils.logger.critical(f"Table '{table_name}' row count ({row_count}) does not match node count ({len(nodes)}).")
+        except jwt.exceptions.InvalidSignatureError:
+            utils.logger.error(f"Background task: Failed signature verification for update_golden_qa_pairs ({product}). Unauthorized.")
+        except Exception as exc:
+            utils.logger.critical(f"Background task: Internal error in update_golden_qa_pairs ({product}): {exc}", exc_info=True)
+            # Ensure temporary folder is cleaned up even if unexpected error occurs before finally block
+            if 'temp_qa_folder' in locals() and temp_qa_folder and os.path.exists(temp_qa_folder):
+                utils.logger.warning(f"Background task: Cleaning up temporary folder {temp_qa_folder} due to error.")
+                shutil.rmtree(temp_qa_folder)
+
+    create_qa_pairs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+
 @app.post("/update_golden_qa_pairs/", response_model=str, response_class=PlainTextResponse)
-async def update_golden_qa_pairs(product: str, encrypted_key: str) -> str:
+async def update_golden_qa_pairs(product: str, encrypted_key: str, background_tasks: BackgroundTasks) -> str:
     """
-    Updates golden QA pairs in LanceDB for a specified product.
+    Initiates the update of golden QA pairs in LanceDB for a specified product in the background.
 
     Args:
         product (str): Product name ("IDA" or "IDDM").
         encrypted_key (str): JWT key for authentication.
+        background_tasks (BackgroundTasks): FastAPI background task manager.
 
     Returns:
-        str: Confirmation message on success.
-
-    Raises:
-        HTTPException: On authentication failure or internal errors.
+        str: Immediate confirmation message.
     """
-    try:
-        jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
-        if os.path.exists(QA_PAIRS_FOLDERPATH):
-            shutil.rmtree(QA_PAIRS_FOLDERPATH)
-        git.Repo.clone_from(QA_PAIRS_GITHUB_REPO_URL, QA_PAIRS_FOLDERPATH)
-        filepath = f"{QA_PAIRS_FOLDERPATH}/{product.lower()}_qa_pairs.md"
-        with open(filepath, "r", encoding="utf-8") as file:
-            file_content = file.read()
-
-        db = lancedb.connect(LANCEDB_FOLDERPATH)
-        table_name = f"{product}_QA_PAIRS"
-        try:
-            db.drop_table(table_name)
-        except Exception:
-            utils.logger.exception("Table %s seems to have been deleted.", product)
-
-        qa_pairs = [pair.strip() for pair in file_content.split("# Question/Answer Pair") if pair.strip()]
-        documents = []
-        qa_pattern = re.compile(r"Question:\s*(.*?)\nAnswer:\s*(.*)", re.DOTALL)
-        product_versions = IDDM_PRODUCT_VERSIONS if product == "IDDM" else IDA_PRODUCT_VERSIONS
-        version_pattern = (
-            re.compile(r"v?\d+\.\d+", re.IGNORECASE)
-            if product == "IDDM"
-            else re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
-        )
-
-        for pair in qa_pairs:
-            if match := qa_pattern.search(pair):
-                question, answer = match[1].strip(), match[2].strip()
-                doc = Document(text=question)
-                doc.metadata["answer"] = answer
-                matched_versions = get_matching_versions(question, product_versions, version_pattern)
-                doc.metadata["version"] = matched_versions[0] if matched_versions else "none"
-                doc.excluded_embed_metadata_keys.extend(["version", "answer"])
-                documents.append(doc)
-
-        splitter = SentenceSplitter(chunk_size=10000)
-        nodes = splitter.get_nodes_from_documents(documents=documents, show_progress=True)
-        Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-large")
-        vector_store = LanceDBVectorStore(uri="lancedb", table_name=table_name, query_type="hybrid")
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        index = VectorStoreIndex(nodes=nodes, storage_context=storage_context)
-        retriever = index.as_retriever(similarity_top_k=8)
-        update_retriever(table_name, retriever)
-        return "Successfully inserted QA pairs into DB."
-    except jwt.exceptions.InvalidSignatureError as e:
-        raise HTTPException(
-            status_code=401,
-            detail="Failed signature verification. Unauthorized.",
-        ) from e
-    except Exception as exc:
-        utils.logger.critical("Internal error in update_golden_qa_pairs(): %s", exc)
-        raise HTTPException(status_code=500, detail="Internal error in update_golden_qa_pairs()") from exc
+    jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
+    background_tasks.add_task(_run_update_golden_qa_pairs_task)
+    return "Golden QA pair update initiated. Please wait for ~2 minutes before using Rocknbot"
 
 
 @app.post("/get_conversations/")
@@ -725,23 +809,10 @@ async def get_conversations(product: str, endorsed_by: str, encrypted_key: str) 
         raise HTTPException(status_code=500, detail="Internal error in get_conversations()") from exc
 
 
-@app.post("/rebuild_docs/", response_model=str, response_class=PlainTextResponse)
-async def rebuild_docs(encrypted_key: str) -> str:
-    """
-    Rebuilds the documentation database from GitHub repositories.
-
-    Args:
-        encrypted_key (str): JWT key for authentication.
-
-    Returns:
-        str: Success message with any cloning failure details.
-
-    Raises:
-        HTTPException: On authentication failure or internal errors.
-    """
+async def _run_rebuild_docs_task():
+    """Contains the core logic for rebuilding docs, run as a background task."""
     try:
-        jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
-        db = lancedb.connect(LANCEDB_FOLDERPATH)
+        utils.logger.info("Background task: Starting documentation rebuild.")
         failed_clone_messages = ""
         product_repos_dict = {
             "IDDM": [
@@ -781,17 +852,20 @@ async def rebuild_docs(encrypted_key: str) -> str:
             return metadata
 
         def clone_repo(repo_url, target_dir, branch):
+            # Note: This synchronous function is called within an async context.
+            # Consider making it async or running in a thread pool executor for large repos.
             try:
                 git.Repo.clone_from(repo_url, target_dir, branch=branch)
                 return True
-            except Exception:
+            except Exception as clone_exc:
+                utils.logger.error(f"Background task: Failed to clone {repo_url} ({branch}): {clone_exc}", exc_info=True)
                 return False
 
         splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=20)
         node_parser = MarkdownNodeParser()
         reader = MarkdownReader()
         file_extractor = {".md": reader}
-        Settings.llm = OpenAI_Llama(model="gpt-3.5-turbo")
+        Settings.llm = OpenAI_Llama(model="gpt-3.5-turbo") # Note: Consider if this needs to be set per request/task
         pipeline = IngestionPipeline(transformations=[node_parser])
         excluded_metadata_keys = [
             "file_path",
@@ -804,6 +878,7 @@ async def rebuild_docs(encrypted_key: str) -> str:
             "github_url",
         ]
 
+        db = lancedb.connect(LANCEDB_FOLDERPATH)
         for product, repo_branches in product_repos_dict.items():
             with tempfile.TemporaryDirectory() as temp_dir:
                 product_dir = os.path.join(temp_dir, product)
@@ -817,15 +892,17 @@ async def rebuild_docs(encrypted_key: str) -> str:
                             shutil.rmtree(target_dir)
                         success = False
                         for attempt in range(5):
-                            success = clone_repo(repo_url, target_dir, branch)
+                            success = clone_repo(repo_url, target_dir, branch) # Consider executor for sync git call
                             if success:
                                 break
                             if attempt < 4:
                                 await asyncio.sleep(10)
                             else:
                                 msg = f"Max retries reached. Failed to clone {repo_url} ({branch}) into {target_dir}."
-                                utils.logger.error(msg)
+                                utils.logger.error(f"Background task: {msg}")
                                 failed_clone_messages += f"{msg} "
+                        if not success: # Skip processing if clone failed
+                            continue
                         md_files = find_md_files(target_dir)
                         for file in md_files:
                             try:
@@ -841,7 +918,7 @@ async def rebuild_docs(encrypted_key: str) -> str:
                                 metadata = extract_metadata_from_lines(first_lines)
                                 metadata["version"] = branch
                             except Exception as e:
-                                utils.logger.error("Failed to process file %s: %s", file, e)
+                                utils.logger.error(f"Background task: Failed to process file {file}: {e}", exc_info=True)
                                 continue
                             documents = SimpleDirectoryReader(
                                 input_files=[file], file_extractor=file_extractor
@@ -859,6 +936,11 @@ async def rebuild_docs(encrypted_key: str) -> str:
                                 node.excluded_llm_metadata_keys = excluded_metadata_keys
                                 node.excluded_embed_metadata_keys = excluded_metadata_keys
                             all_nodes.extend(nodes)
+
+                if not all_nodes: # Skip DB update if no nodes were generated for the product
+                    utils.logger.warning(f"Background task: No documents processed for product {product}. Skipping DB update.")
+                    continue
+
                 enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
                 new_nodes = []
                 for node in all_nodes:
@@ -871,24 +953,94 @@ async def rebuild_docs(encrypted_key: str) -> str:
                         new_nodes.append(node)
                 all_nodes = new_nodes
 
-                Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-large")
                 try:
-                    db.drop_table(product)
-                except Exception:
-                    utils.logger.exception("Table %s seems to have been deleted.", product)
-                vector_store = LanceDBVectorStore(uri="lancedb", table_name=product, query_type="hybrid")
-                storage_context = StorageContext.from_defaults(vector_store=vector_store)
-                index = VectorStoreIndex(nodes=all_nodes[:1], storage_context=storage_context)
-                index.insert_nodes(all_nodes[1:])
-                retriever = index.as_retriever(similarity_top_k=50)
-                update_retriever(product, retriever)
+                    product_new = f'{product}_new'
 
-        return f"Rebuilt DB successfully!{failed_clone_messages}"
+                    # Ensure there's at least one node before creating/inserting
+                    if all_nodes:
+                        utils.logger.info(f"Background task: Creating/updating index for {product_new} with {len(all_nodes)} nodes.")
+                        
+                        # just create the table first with a single row
+                        vector_store = LanceDBVectorStore(connection=db, 
+                                                        uri="lancedb", 
+                                                        table_name=product_new, 
+                                                        query_type="hybrid")
+                        storage_context = StorageContext.from_defaults(vector_store=vector_store)
+                        index = VectorStoreIndex(nodes=all_nodes[:1], storage_context=storage_context)
+
+                        # THIS IS IMPORTANT! ONLY WAY TO ASSOCIATE THE TABLE WITH THE INDEX
+                        table = db.open_table(product_new)
+                        vector_store = LanceDBVectorStore.from_table(table)
+                        index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+
+                        # Insert remaining nodes in batches
+                        remaining_nodes = all_nodes[1:]
+                        batch_size = 1000
+                        num_batches = (len(remaining_nodes) + batch_size - 1) // batch_size
+                        
+                        if remaining_nodes:
+                            utils.logger.info(f"Background task: Inserting {len(remaining_nodes)} remaining nodes in {num_batches} batches of size {batch_size}...")
+                            for i in range(0, len(remaining_nodes), batch_size):
+                                batch = remaining_nodes[i:i + batch_size]
+                                index.insert_nodes(batch)
+
+                                current_batch_num = (i // batch_size) + 1
+                                utils.logger.info(f"Background task: Inserted batch {current_batch_num}/{num_batches}")
+
+                        table = db.open_table(product_new)
+                        row_count = table.count_rows()
+                        if row_count != len(all_nodes):
+                            utils.logger.critical(f"Table '{product_new}' row count ({row_count}) does not match node count ({len(all_nodes)}).")
+                            return
+
+                        # Now drop the old database
+                        if product in db.table_names():
+                            utils.logger.info(f"Background task: Dropping existing table {product}.")
+                            db.drop_table(product)
+                        # if os.path.exists(product_path):
+                        #     shutil.rmtree(product_path)  # Remove existing table if it exists
+                        # And rename <product_new>.lance database folder to <product>.lance
+                        productnew_path = os.path.join(LANCEDB_FOLDERPATH, f"{product_new}.lance")
+                        product_path = os.path.join(LANCEDB_FOLDERPATH, f"{product}.lance")
+                        shutil.move(productnew_path, product_path)  # Rename the table directory
+                        utils.logger.info(f"Background task: Renamed table from {product_new} to {product}")
+
+                        utils.logger.info(f"Background task: Successfully inserted/updated nodes for {product_new}.") # Changed log message
+                    else:
+                         utils.logger.warning(f"Background task: No nodes to index for product {product_new}.")
+                except Exception:
+                    utils.logger.exception(f"Background task: Could not rebuild table {product_new}")
+                    return
+
+        result_message = f"Rebuilt DB successfully!{failed_clone_messages}" # This message is now only logged
+        utils.logger.info(f"Background task: Documentation rebuild finished. Result: {result_message}")
+
     except jwt.exceptions.InvalidSignatureError:
-        raise HTTPException(status_code=401, detail="Failed signature verification. Unauthorized.")
-    except Exception as exc:
-        utils.logger.critical("Internal error in rebuild_docs(): %s", exc)
-        raise HTTPException(status_code=500, detail="Internal error in rebuild_docs()") from exc
+        # Log the authentication error specifically
+        utils.logger.error("Background task: Failed signature verification for rebuild_docs. Unauthorized.")
+        return
+    except Exception:
+        # Log any other errors during the rebuild process
+        utils.logger.exception("Background task: Documentation rebuild failed unexpectedly")
+        return
+
+    create_docdbs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+
+@app.post("/rebuild_docs/", response_model=str, response_class=PlainTextResponse)
+async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
+    """
+    Initiates the documentation database rebuild in the background.
+
+    Args:
+        encrypted_key (str): JWT key for authentication.
+        background_tasks (BackgroundTasks): FastAPI background task manager.
+
+    Returns:
+        str: Immediate confirmation message.
+    """
+    jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
+    background_tasks.add_task(_run_rebuild_docs_task)
+    return "Documentation rebuild initiated. Changes will become effective in ~1 hour. Until then, Rocknbot will continue to answer questions using current docs"
 
 
 @app.get("/", response_class=HTMLResponse)
