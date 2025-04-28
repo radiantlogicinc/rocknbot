@@ -121,7 +121,7 @@
             display: flex;
             align-items: center;
             justify-content: flex-start;
-            margin-bottom: 30px;
+            margin-bottom: 0;
             flex-wrap: wrap;
         }
 
@@ -318,7 +318,7 @@
         }
 
         #doc-links-container {
-            margin: 20px 0;
+            margin: 0;
             font-size: 1rem;
             text-align: left;
         }
@@ -448,7 +448,7 @@
                 <div id="messages-IDDM" class="grok-messages"></div>
               </div>`,
             "EOC": `<div class="static-info">
-                <p>The Environment Operations Center does not support chatbot functionality yet. Please refer to the documentation below for details.</p>
+                <p>Environment Operations Center provides a unified control plane for managing your Radiant Logic SaaS applications. The documentation assistant doesn't support it yet. Please click the link below to access the documentation.</p>
               </div>`
         };
 
@@ -931,8 +931,7 @@
                 chatArea.innerHTML = chatTemplates["EOC"];
                 chatArea.style.display = "block";
                 docLinksContainer.innerHTML =
-                    'See admin documentation <a href="https://developer.radiantlogic.com/eoc/latest/#0" target="_blank">Admin Documentation</a><br>' +
-                    'Environment Operations Center provides a unified control plane for managing your RadiantOne SaaS applications.';
+                    'See admin documentation <a href="https://developer.radiantlogic.com/eoc/latest/#0" target="_blank">Admin Documentation</a><br>';
                 if (inputArea) inputArea.style.display = "none";
                 if (startNewChatBtn) startNewChatBtn.style.display = "none";
                 document.getElementById('scroll-to-bottom-btn').style.display = 'none';
@@ -952,14 +951,14 @@
 
             if (product === "IDDM") {
                 docLinksContainer.innerHTML =
+                    'Use Identity Data Management to simplify the complexity of integrating multiple, heterogeneous identity data silos to speed up your identity projects.<br>' +
                     'See admin documentation <a href="https://developer.radiantlogic.com/idm/v8.1/#0" target="_blank">Admin Documentation</a><br>' +
-                    'See developer documentation <a href="https://developer.radiantlogic.com/idm/v8.1/#1" target="_blank">Developer Documentation</a><br>' +
-                    'Simplify the management of identity data across distributed silos and speed up your identity projects.';
+                    'See developer documentation <a href="https://developer.radiantlogic.com/idm/v8.1/#1" target="_blank">Developer Documentation</a>';
             } else if (product === "IDA") {
                 docLinksContainer.innerHTML =
+                    'Use Identity Analytics to quickly respond to audit recommendations and automate controls for compliant access rights.<br>' +
                     'See user guide <a href="https://developer.radiantlogic.com/ia/iap-3.2/#0" target="_blank">User Guide</a><br>' +
-                    'See developer documentation <a href="https://developer.radiantlogic.com/ia/descartes/#1" target="_blank">Developer Documentation</a><br>' +
-                    'Quickly respond to audit recommendations and automate controls for compliant access rights.';
+                    'See developer documentation <a href="https://developer.radiantlogic.com/ia/descartes/#1" target="_blank">Developer Documentation</a>';
             } else {
                 docLinksContainer.innerHTML = "";
             }
