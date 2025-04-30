@@ -1,0 +1,5 @@
+# Start with a minimal docker image
+FROM chainguard/wolfi-base:latest
+
+# Copy the lancedb folder
+COPY lancedb /lancedb
