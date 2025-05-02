@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import zipfile
+import pathlib
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Generator, Optional, Sequence
 
@@ -926,41 +927,34 @@ async def _run_rebuild_docs_task():
                             for doc in documents:
                                 doc.metadata.update(metadata)
                                 file_path = doc.metadata["file_path"]
-                                # Extract repository name from URL (without .git extension)
-                                repo_name = repo_url.rsplit("/", 1)[-1].replace(".git", "")
-                                
-                                # Extract the useful part of the path by removing the temporary directory component
                                 try:
                                     # Get the repository URL base without the .git extension
                                     repo_base = repo_url.replace(".git", "")
                                     
-                                    # Find the position of repo name in the file path
-                                    repo_pos = file_path.find(repo_name)
-                                    if repo_pos != -1:
-                                        # Extract path from after the repo name and branch
-                                        relative_path = file_path[repo_pos:].split(branch + "/", 1)
-                                        if len(relative_path) > 1:
-                                            # If we found the branch name, use everything after it
-                                            github_url = f"{repo_base}/blob/{branch}/{relative_path[1]}"
-                                        else:
-                                            # Fallback if branch isn't found in the path
-                                            suffix = file_path.split(repo_name, 1)[1].lstrip("/")
-                                            github_url = f"{repo_base}/blob/{branch}/{suffix}"
+                                    # Convert file_path to a Path object for easier manipulation
+                                    path_obj = pathlib.Path(file_path)
+                                    
+                                    # Try to find the branch name in the path parts
+                                    path_parts = path_obj.parts
+                                    relative_path = None
+                                    
+                                    # Look for branch name in the path
+                                    if branch in path_parts:
+                                        branch_index = path_parts.index(branch)
+                                        # Get all parts after the branch
+                                        if branch_index + 1 < len(path_parts):
+                                            relative_path = pathlib.Path(*path_parts[branch_index+1:])
+                                    
+                                    # If we found a relative path after the branch
+                                    if relative_path:
+                                        github_url = f"{repo_base}/blob/{branch}/{relative_path}"
                                     else:
-                                        # If repo name isn't in path, extract from branch if possible
-                                        branch_pos = file_path.find(branch)
-                                        if branch_pos != -1:
-                                            relative_path = file_path.split(branch + "/", 1)
-                                            if len(relative_path) > 1:
-                                                github_url = f"{repo_base}/blob/{branch}/{relative_path[1]}"
-                                            else:
-                                                github_url = f"{repo_base}/blob/{branch}"
-                                        else:
-                                            # Last resort fallback
-                                            github_url = f"{repo_base}/blob/{branch}"
+                                        # Fallback: just use the file name at the end of the path
+                                        github_url = f"{repo_base}/blob/{branch}/{path_obj.name}"
+                                    
                                 except Exception as e:
                                     utils.logger.warning(f"Background task: Failed to create proper GitHub URL for {file_path}: {e}")
-                                    github_url = f"{repo_url.replace('.git', '')}/blob/{branch}"
+                                    github_url = f"{repo_base}/blob/{branch}"
                                 
                                 doc.metadata["github_url"] = github_url
                             nodes = pipeline.run(documents=documents, in_place=False)
