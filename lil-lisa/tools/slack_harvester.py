@@ -12,6 +12,7 @@ import time
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
+from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
 
 from src import utils
 
@@ -22,6 +23,11 @@ class SlackHarvester:
         if not self.token:
             raise ValueError("Slack bot token is required. Set SLACK_BOT_TOKEN environment variable or pass token to constructor.")
         self.client = WebClient(token=self.token)
+
+        # This handler does retries when HTTP status 429 is returned
+        rate_limit_handler = RateLimitErrorRetryHandler(max_retry_count=1)
+        # Enable rate limited error retries as well
+        self.client.retry_handlers.append(rate_limit_handler)
 
     def get_channel_history(self, channel_id: str, oldest: float = 0) -> List[Dict[Any, Any]]:
         """
