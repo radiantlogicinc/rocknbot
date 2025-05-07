@@ -8,6 +8,9 @@ AWS_REGION = us-west-2#$(shell aws ec2 describe-availability-zones --query 'Avai
 IMAGE=lil-lisa-server
 TAG=2.5.2
 
+# lancedb
+LDB_TAG=2.5.3
+
 .EXPORT_ALL_VARIABLES:
 
 .PHONY: _include-env
@@ -41,7 +44,7 @@ _build-cloud:
 	docker build -f ./build/dockerfile_cloud -t ${IMAGE}:${TAG} .
 
 _build-lancedb:
-	docker build -f ./build/dockerfile_lancedb -t ${IMAGE}-lancedb:${TAG} .
+	docker build -f ./build/dockerfile_lancedb -t ${IMAGE}-lancedb:${LDB_TAG} .
 
 build-local: _lint _build-local
 
@@ -65,5 +68,5 @@ push-image-to-aws:
 # has to be done in terminal
 push-lancedb-to-aws:
 	aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com
-	docker tag ${IMAGE}-lancedb:${TAG} ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}-lancedb:${TAG}
-	docker push ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}-lancedb:${TAG}
+	docker tag ${IMAGE}-lancedb:${LDB_TAG} ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}-lancedb:${LDB_TAG}
+	docker push ${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE}-lancedb:${LDB_TAG}
