@@ -72,20 +72,48 @@ def api_chat_cot():
         logger.error(traceback.format_exc())
         return f"Internal server error: {e}", 500, {'Content-Type': 'text/plain'}
 
-@app.route("/api/thumbsup", methods=["POST"])
-def api_thumbsup():
+@app.route("/api/with_nodes", methods=["POST"])
+def api_with_nodes():
+    """
+    Proxies the request to /invoke_with_nodes and returns the final answer with top 10 nodes.
+    The markdown response is formatted as HTML for consistent browser rendering.
+    """
     data = request.get_json()
-    session_id = data.get("session_id")
+    session_id = data.get("session_id") or generate_unique_session_id()
+    product = data.get("product")
+    nl_query = data.get("query")
+    locale = data.get("locale", "en-US")
+    is_expert = data.get("is_expert", False)
+    include_nodes = data.get("include_nodes", True)
+
+    invoke_url = f"{BASE_URL}/invoke_with_nodes/"
+    params = {
+        "session_id": session_id,
+        "locale": locale,
+        "product": product,
+        "nl_query": nl_query,
+        "is_expert_answering": is_expert,
+        "include_nodes": include_nodes
+    }
     try:
-        thumb_url = f"{BASE_URL}/record_endorsement/"
-        params = {"session_id": session_id, "is_expert": False, "thumbs_up": True}
-        resp = requests.post(thumb_url, params=params, timeout=10)
+        # Increased timeout from 90 to 180 seconds
+        resp = requests.post(invoke_url, params=params, timeout=180)
         resp.raise_for_status()
-        result = resp.text
+        
+        # Get JSON response from the server
+        response_data = resp.json()
+        return jsonify(response_data)
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Request timed out: {str(e)}")
+        # Custom error message for timeout
+        return jsonify({"error": "Unable to get the response. We are trying to fix the server. Please try again later."}), 504
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error while retrieving nodes response: {str(e)}")
+        return jsonify({"error": f"Failed to communicate with the server: {str(e)}"}), 503
     except Exception as e:
-        traceback.print_exc()
-        result = f"Error: {str(e)}"
-    return jsonify({"result": result})
+        logger.error(f"Internal error while retrieving nodes response: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": f"Internal server error: {e}"}), 500
 
 @app.route("/api/thumbsdown", methods=["POST"])
 def api_thumbsdown():
