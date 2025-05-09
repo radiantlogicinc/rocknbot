@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import json
 import tempfile
 import zipfile
 import pathlib
@@ -50,6 +51,7 @@ from src.agent_and_tools import (
     IDDM_PRODUCT_VERSIONS,
     PRODUCT,
     answer_from_document_retrieval,
+    answer_from_document_retrieval_nodes,
     get_matching_versions,
     handle_user_answer,
     improve_query,
@@ -559,6 +561,115 @@ def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_
             return final_response
         utils.logger.critical("Internal error in invoke() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc)
         raise HTTPException(status_code=500, detail=f"Internal error in invoke() for session_id: {session_id}") from exc
+
+@app.post("/invoke_with_nodes/")
+async def invoke_with_nodes(
+    session_id: str,
+    locale: str,
+    product: str,
+    nl_query: str,
+    is_expert_answering: bool,
+    include_nodes: bool
+):
+    """
+    Processes a natural language query or expert answer without streaming.
+
+    Args:
+        session_id (str): Unique identifier for the session.
+        locale (str): Locale of the conversation.
+        product (str): Product ("IDA" or "IDDM").
+        nl_query (str): Natural language query or expert answer.
+        is_expert_answering (bool): Indicates if an expert is providing the answer.
+        include_nodes (bool): Whether to include the top 10 nodes in the response.
+
+    Returns:
+        str: Response from AI with top 10 nodes.
+
+    Raises:
+        HTTPException: On internal errors or invalid input.
+    """
+    def format_text_to_html(text_content: str) -> str:
+        """
+        Formats a given text string to HTML.
+        """
+        if not isinstance(text_content, str): # Ensure input is a string
+            text_content = str(text_content)
+
+        processed_text = text_content
+        
+        # 1. Convert markdown bold to HTML strong tag.
+        processed_text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", processed_text)
+        
+        # 2. Convert markdown links [text](URL) to HTML anchor tags
+        processed_text = re.sub(
+            r"\[([^\]]+?)\]\((https?://[^\s\)]+)\)",
+            r'<a href="\2" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
+            processed_text
+        )
+        
+        # 3. Convert standalone URLs (not already in an href attribute of an <a> tag) to clickable links
+        processed_text = re.sub(
+            r"(?<!href=['\"])(?<!\]\()(https?://[^\s'\"<>]+)",
+            r'<a href="\1" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
+            processed_text
+        )
+        
+        # 4. Replace newline characters with <br> tags.
+        return processed_text.replace("\n", "<br>")
+    llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
+    
+    final_answer_text = ""  # This will hold the raw text to be formatted
+    reranked_nodes = []
+
+    if is_expert_answering:
+        llsc.add_to_conversation_history("Expert", nl_query)
+        final_answer_text = nl_query
+    else:
+        conversation_history = "\n".join(f"{p}: {m}" for p, m in llsc.conversation_history)
+        tools = [
+            FunctionTool.from_defaults(fn=improve_query),
+            FunctionTool.from_defaults(fn=answer_from_document_retrieval_nodes, return_direct=True),
+            FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
+        ]
+        llm = LiteLLM(model=LLM_MODEL)
+        react_agent = ReActAgent.from_tools(
+            tools=tools,
+            llm=llm,
+            verbose=(utils.LOG_LEVEL == utils.logging.DEBUG),
+            max_iterations=MAX_ITERATIONS
+        )
+        prompt_payload = (
+            REACT_AGENT_PROMPT
+            .replace("<PRODUCT>", product)
+            .replace("<CONVERSATION_HISTORY>", conversation_history)
+            .replace("<QUERY>", nl_query)
+        )
+        llsc.add_to_conversation_history("User", nl_query)
+        
+        agent_response_str = react_agent.chat(prompt_payload).response
+        
+        # Attempt to clean and parse the agent's response
+        cleaned_response_str = agent_response_str
+        observation_prefix = "Observation: "
+        if agent_response_str.startswith(observation_prefix):
+            cleaned_response_str = agent_response_str[len(observation_prefix):].strip()
+
+        # Expecting cleaned_response_str to be a JSON string from answer_from_document_retrieval_nodes
+        response_dict = json.loads(cleaned_response_str)
+        final_answer_text = response_dict.get('response', '') # Extract the actual answer
+        reranked_nodes = response_dict.get('reranked_nodes', [])
+        
+        llsc.add_to_conversation_history("Assistant", final_answer_text if isinstance(final_answer_text, str) else json.dumps(final_answer_text))
+
+    # Apply HTML formatting to the extracted final_answer_text
+    formatted_final_answer_html = format_text_to_html(final_answer_text)
+
+    response_data = {"final_answer": formatted_final_answer_html}
+    if include_nodes:
+        response_data["reranked_nodes"] = reranked_nodes # Nodes are not HTML formatted here
+    
+    return response_data
+
 
 
 @app.post("/record_endorsement/", response_model=str, response_class=PlainTextResponse)
