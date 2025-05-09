@@ -115,6 +115,21 @@ def api_with_nodes():
         logger.error(traceback.format_exc())
         return jsonify({"error": f"Internal server error: {e}"}), 500
 
+@app.route("/api/thumbsup", methods=["POST"])
+def api_thumbsup():
+    data = request.get_json()
+    session_id = data.get("session_id")
+    try:
+        thumb_url = f"{BASE_URL}/record_endorsement/"
+        params = {"session_id": session_id, "is_expert": False, "thumbs_up": True}
+        resp = requests.post(thumb_url, params=params, timeout=10)
+        resp.raise_for_status()
+        result = resp.text
+    except Exception as e:
+        traceback.print_exc()
+        result = f"Error: {str(e)}"
+    return jsonify({"result": result})
+
 @app.route("/api/thumbsdown", methods=["POST"])
 def api_thumbsdown():
     data = request.get_json()
