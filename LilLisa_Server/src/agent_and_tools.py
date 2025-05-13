@@ -232,7 +232,6 @@ def handle_user_answer(answer: str) -> str:
     """
     return answer
 
-
 def improve_query(query: str, conversation_history: str) -> str:
     """
     Clears up vagueness from query with the help of the conversation history and returns a new query revealing the user's true intention, without distorting the meaning behind the original query. If needed, this should be the first tool called; else, should not be called at all.
@@ -248,16 +247,20 @@ def improve_query(query: str, conversation_history: str) -> str:
 
     Based on the conversation history and query, generate a new query that links the two, maximizing semantic understanding.
     """
-    response = (
-        completion(
-            model=LLM_MODEL, 
-            messages=[
-                {"role": "user", "content": user_prompt}
-            ],
-        )
-        .choices[0]
-        .message.content
-    )
+    
+    response = ""
+    for chunk in completion(
+        model=LLM_MODEL, 
+        messages=[
+            {"role": "user", "content": user_prompt}
+        ],
+        stream=True,  # Enable streaming
+    ):
+        # Process each chunk as it arrives
+        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
+            response += content
+
     return response
 
 
@@ -412,17 +415,36 @@ def answer_from_document_retrieval(
     user_prompt = user_prompt.replace("<CONVERSATION_HISTORY>", conversation_history)
     user_prompt = user_prompt.replace("<QUESTION>", original_query)
 
-    response += (
-        completion(
-            model=LLM_MODEL, 
-            messages=[
-                {"role": "system", "content": qa_system_prompt}, 
-                {"role": "user", "content": user_prompt}
-            ],
-        )
-        .choices[0]
-        .message.content
-    )
+    # response += (
+    #     completion(
+    #         model=LLM_MODEL, 
+    #         messages=[
+    #             {"role": "system", "content": qa_system_prompt}, 
+    #             {"role": "user", "content": user_prompt}
+    #         ],
+    #     )
+    #     .choices[0]
+    #     .message.content
+    # )
+    import time
+    start_time = time.time()
+    llm_response = ""
+    for chunk in completion(
+        model=LLM_MODEL, 
+        messages=[
+            {"role": "system", "content": qa_system_prompt}, 
+            {"role": "user", "content": user_prompt}
+        ],
+        stream=True,  # Enable streaming
+    ):
+        # Process each chunk as it arrives
+        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
+            llm_response += content
+
+    response += llm_response
+    end_time = time.time()
+    logging.info(f"LLM response time: {end_time - start_time} seconds")
 
     response += "\n\nHere are some potentially helpful documentation links:\n"
     response += "\n".join(f"- {link}" for link in useful_links)
@@ -510,17 +532,20 @@ def answer_from_document_retrieval_nodes(
     user_prompt = user_prompt.replace("<CONVERSATION_HISTORY>", conversation_history)
     user_prompt = user_prompt.replace("<QUESTION>", original_query)
 
-    response += (
-        completion(
-            model=LLM_MODEL, 
-            messages=[
-                {"role": "system", "content": qa_system_prompt}, 
-                {"role": "user", "content": user_prompt}
-            ],
-        )
-        .choices[0]
-        .message.content
-    )
+    llm_response = ""
+    for chunk in completion(
+        model=LLM_MODEL, 
+        messages=[
+            {"role": "system", "content": qa_system_prompt}, 
+            {"role": "user", "content": user_prompt}
+        ],
+        stream=True,  # Enable streaming
+    ):
+        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
+            llm_response += content
+    
+    response += llm_response
 
     # Format links as plain markdown links to avoid double HTML conversion
     response += "\n\nHere are some potentially helpful documentation links:"
