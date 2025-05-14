@@ -287,8 +287,9 @@
         }
 
         .loading-text {
-            margin-top: 5px;
             font-size: 0.9em;
+            margin-left: 10px;
+            display: inline-block;
         }
 
         .feedback-container {
@@ -373,6 +374,49 @@
             margin-bottom: 10px;
             z-index: 1001;
         }
+
+        /* Source nodes section */
+        .source-nodes-container {
+            margin-top: 20px;
+            border-top: 1px dashed #ccc;
+            padding-top: 15px;
+        }
+
+        .source-node {
+            background: #f8f9fa;
+            border-left: 3px solid #6c757d;
+            padding: 10px;
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+            border-radius: 4px;
+        }
+
+        .source-nodes-title {
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #495057;
+        }
+
+        .source-url {
+            margin-top: 5px;
+            text-align: right;
+        }
+
+        .source-url a {
+            color: #0056b3;
+            text-decoration: none;
+            font-size: 0.85rem;
+            padding: 3px 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f1f1f1;
+            transition: all 0.2s ease;
+        }
+
+        .source-url a:hover {
+            background-color: #e7f1ff;
+            border-color: #0056b3;
+        }
     </style>
 </head>
 
@@ -424,6 +468,10 @@
                 <div class="checkbox-container" id="start-new-chat-checkbox-container">
                     <input type="checkbox" id="start-new-chat-checkbox">
                     <span class="tooltip">Start New Chat</span>
+                </div>
+                <div class="checkbox-container" id="show-sources-checkbox-container">
+                    <input type="checkbox" id="show-sources-checkbox">
+                    <span class="tooltip">Show Top 10 Sources</span>
                 </div>
             </div>
             <!-- Scroll-to-bottom button -->
@@ -598,7 +646,7 @@
             return prefix + '-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
         }
 
-        function appendMessage(content, sender) {
+        function appendMessage(content, sender, nodes = null) {
             if (!currentProduct) return;
             let messagesDiv = document.getElementById('messages-' + currentProduct);
             if (!document.getElementById('chat-' + currentProduct)) {
@@ -620,6 +668,37 @@
             } else if (sender === 'assistant') {
                 msgDiv.classList.add('assistant-message');
                 msgDiv.innerHTML = content;
+
+                // Add source nodes if available
+                if (nodes && Array.isArray(nodes) && nodes.length > 0) {
+                    const sourceNodesContainer = document.createElement('div');
+                    sourceNodesContainer.classList.add('source-nodes-container');
+                    sourceNodesContainer.innerHTML = '<div class="source-nodes-title">Top Sources:</div>';
+
+                    nodes.forEach((node, index) => {
+                        const nodeDiv = document.createElement('div');
+                        nodeDiv.classList.add('source-node');
+
+                        // Get text content from node
+                        const nodeText = node.text || node;
+
+                        // Create main content for the node
+                        nodeDiv.innerHTML = `<strong>Source ${index + 1}</strong>: ${nodeText}`;
+
+                        // Add GitHub URL if available in metadata
+                        if (node.metadata && node.metadata.github_url) {
+                            const urlDiv = document.createElement('div');
+                            urlDiv.classList.add('source-url');
+                            urlDiv.innerHTML = `<a href="${node.metadata.github_url}" target="_blank">Source Documentation</a>`;
+                            nodeDiv.appendChild(urlDiv);
+                        }
+
+                        sourceNodesContainer.appendChild(nodeDiv);
+                    });
+
+                    msgDiv.appendChild(sourceNodesContainer);
+                }
+
                 if (!content.startsWith("[Error")) {
                     const feedbackDiv = document.createElement('div');
                     feedbackDiv.classList.add('feedback-container');
@@ -670,10 +749,12 @@
             const loader = document.createElement('div');
             loader.classList.add('grok-message', 'assistant-message');
             loader.id = 'loading-indicator';
-            loader.innerHTML = `<div class="spinner-border text-secondary spinner-border-sm" role="status">
-                            <span class="visually-hidden">Loading...</span>
-                          </div>
-                          <div class="loading-text">This may take up to a minute.</div>`;
+            loader.innerHTML = `<div style="display: flex; align-items: center;">
+                            <div class="spinner-border text-secondary spinner-border-sm" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <div class="loading-text">This may take up to a minute.</div>
+                          </div>`;
             messagesDiv.appendChild(loader);
             messagesDiv.scrollTo({ top: messagesDiv.scrollHeight, behavior: 'smooth' });
         }
@@ -771,31 +852,9 @@
             queryInput.value = '';
             removeLoadingIndicator();
 
-            const uniqueId = createUniqueId("query");
-            const messagesDiv = document.getElementById("messages-" + currentProduct);
-
-            // Create the description container for progress indicator.
-            const descriptionDiv = document.createElement("div");
-            descriptionDiv.id = "description-container-" + uniqueId;
-            descriptionDiv.className = "assistant-message description";
-            messagesDiv.appendChild(descriptionDiv);
-
-            // Start the progress indicator sequence.
-            const progressTimers = startProgressIndicator(descriptionDiv);
-
-            // Create the CoT container.
-            const cotDiv = document.createElement("div");
-            cotDiv.id = "cot-container-" + uniqueId;
-            cotDiv.className = "assistant-message cot";
-            cotDiv.style.display = "none";  // Initially hidden
-            messagesDiv.appendChild(cotDiv);
-
-            // Create the final answer container.
-            const answerDiv = document.createElement("div");
-            answerDiv.id = "answer-container-" + uniqueId;
-            answerDiv.className = "assistant-message";
-            answerDiv.style.display = "none";
-            messagesDiv.appendChild(answerDiv);
+            // Check if the user wants to see top sources
+            const showSourcesCheckbox = document.getElementById('show-sources-checkbox');
+            const showSources = showSourcesCheckbox && showSourcesCheckbox.checked;
 
             let locale = 'en-US';
             const langCheckbox = document.getElementById('global-language-checkbox');
@@ -807,8 +866,79 @@
                 sessions[currentProduct].sessionId = generateUniqueSessionId();
             }
 
+            if (showSources) {
+                // Use invoke_with_nodes endpoint
+                await sendQueryWithNodes(userQuery, locale);
+            } else {
+                // Use streaming endpoint
+                const uniqueId = createUniqueId("query");
+                const messagesDiv = document.getElementById("messages-" + currentProduct);
+
+                // Create the description container for progress indicator.
+                const descriptionDiv = document.createElement("div");
+                descriptionDiv.id = "description-container-" + uniqueId;
+                descriptionDiv.className = "assistant-message description";
+                messagesDiv.appendChild(descriptionDiv);
+
+                // Start the progress indicator sequence.
+                const progressTimers = startProgressIndicator(descriptionDiv);
+
+                // Create the CoT container.
+                const cotDiv = document.createElement("div");
+                cotDiv.id = "cot-container-" + uniqueId;
+                cotDiv.className = "assistant-message cot";
+                cotDiv.style.display = "none";  // Initially hidden
+                messagesDiv.appendChild(cotDiv);
+
+                // Create the final answer container.
+                const answerDiv = document.createElement("div");
+                answerDiv.id = "answer-container-" + uniqueId;
+                answerDiv.className = "assistant-message";
+                answerDiv.style.display = "none";
+                messagesDiv.appendChild(answerDiv);
+
+                try {
+                    const response = await fetch('/api/chat_cot', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            session_id: sessions[currentProduct].sessionId,
+                            product: currentProduct,
+                            query: userQuery,
+                            locale: locale,
+                            is_expert: false
+                        })
+                    });
+
+                    if (!response.ok) {
+                        if (descriptionDiv) descriptionDiv.remove();
+                        appendMessage(`[Error] ${await response.text()}`, 'assistant');
+                        return;
+                    }
+
+                    const reader = response.body.getReader();
+                    processStreamData(reader, descriptionDiv, cotDiv, answerDiv);
+                } catch (err) {
+                    console.error('Error:', err);
+                    if (descriptionDiv) descriptionDiv.remove();
+                    appendMessage("[Error: Failed to get response]", 'assistant');
+                }
+            }
+
+            if (!sessions[currentProduct].firstQuerySent) {
+                sessions[currentProduct].firstQuerySent = true;
+                const startNewChatBtn = document.getElementById('start-new-chat-button');
+                if (startNewChatBtn) {
+                    startNewChatBtn.style.display = "inline-block";
+                }
+            }
+        }
+
+        async function sendQueryWithNodes(userQuery, locale) {
+            appendLoadingIndicator();
+
             try {
-                const response = await fetch('/api/chat_cot', {
+                const response = await fetch('/api/with_nodes', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -816,35 +946,36 @@
                         product: currentProduct,
                         query: userQuery,
                         locale: locale,
-                        is_expert: false
+                        is_expert: false,
+                        include_nodes: true
                     })
                 });
 
+                removeLoadingIndicator();
+
                 if (!response.ok) {
-                    if (descriptionDiv) descriptionDiv.remove();
                     appendMessage(`[Error] ${await response.text()}`, 'assistant');
                     return;
                 }
 
-                const reader = response.body.getReader();
+                const data = await response.json();
 
-                // Process the stream. When an "ANS:" chunk arrives, clear timers and remove progress UI.
-                processStreamData(reader, descriptionDiv, cotDiv, answerDiv);
-
-                if (!sessions[currentProduct].firstQuerySent) {
-                    sessions[currentProduct].firstQuerySent = true;
-                    const startNewChatBtn = document.getElementById('start-new-chat-button');
-                    if (startNewChatBtn) {
-                        startNewChatBtn.style.display = "inline-block";
-                    }
+                if (data.error) {
+                    appendMessage(`[Error] ${data.error}`, 'assistant');
+                    return;
                 }
+
+                const finalAnswer = data.final_answer;
+                const rerankedNodes = data.reranked_nodes || [];
+
+                // Use finalAnswer directly without additional formatting
+                appendMessage(finalAnswer, 'assistant', rerankedNodes);
             } catch (err) {
                 console.error('Error:', err);
-                if (descriptionDiv) descriptionDiv.remove();
-                appendMessage("[Error: Failed to get response]", 'assistant');
+                removeLoadingIndicator();
+                appendMessage("[Error: Failed to get response with sources]", 'assistant');
             }
         }
-
         async function processStreamData(reader, descriptionDiv, cotDiv, answerDiv) {
             const decoder = new TextDecoder();
             let cotStarted = false;
@@ -915,7 +1046,6 @@
             }
             pump();
         }
-
 
         function selectProduct(product) {
             currentProduct = product;

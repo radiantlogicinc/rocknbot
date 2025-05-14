@@ -10,6 +10,7 @@ import traceback
 from difflib import get_close_matches
 from enum import Enum
 import logging
+import json
 
 
 from litellm import completion
@@ -231,7 +232,6 @@ def handle_user_answer(answer: str) -> str:
     """
     return answer
 
-
 def improve_query(query: str, conversation_history: str) -> str:
     """
     Clears up vagueness from query with the help of the conversation history and returns a new query revealing the user's true intention, without distorting the meaning behind the original query. If needed, this should be the first tool called; else, should not be called at all.
@@ -247,16 +247,20 @@ def improve_query(query: str, conversation_history: str) -> str:
 
     Based on the conversation history and query, generate a new query that links the two, maximizing semantic understanding.
     """
-    response = (
-        completion(
-            model=LLM_MODEL, 
-            messages=[
-                {"role": "user", "content": user_prompt}
-            ],
-        )
-        .choices[0]
-        .message.content
-    )
+    
+    response = ""
+    for chunk in completion(
+        model=LLM_MODEL, 
+        messages=[
+            {"role": "user", "content": user_prompt}
+        ],
+        stream=True,  # Enable streaming
+    ):
+        # Process each chunk as it arrives
+        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
+            response += content
+
     return response
 
 
@@ -411,17 +415,36 @@ def answer_from_document_retrieval(
     user_prompt = user_prompt.replace("<CONVERSATION_HISTORY>", conversation_history)
     user_prompt = user_prompt.replace("<QUESTION>", original_query)
 
-    response += (
-        completion(
-            model=LLM_MODEL, 
-            messages=[
-                {"role": "system", "content": qa_system_prompt}, 
-                {"role": "user", "content": user_prompt}
-            ],
-        )
-        .choices[0]
-        .message.content
-    )
+    # response += (
+    #     completion(
+    #         model=LLM_MODEL, 
+    #         messages=[
+    #             {"role": "system", "content": qa_system_prompt}, 
+    #             {"role": "user", "content": user_prompt}
+    #         ],
+    #     )
+    #     .choices[0]
+    #     .message.content
+    # )
+    import time
+    start_time = time.time()
+    llm_response = ""
+    for chunk in completion(
+        model=LLM_MODEL, 
+        messages=[
+            {"role": "system", "content": qa_system_prompt}, 
+            {"role": "user", "content": user_prompt}
+        ],
+        stream=True,  # Enable streaming
+    ):
+        # Process each chunk as it arrives
+        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
+            llm_response += content
+
+    response += llm_response
+    end_time = time.time()
+    logging.info(f"LLM response time: {end_time - start_time} seconds")
 
     response += "\n\nHere are some potentially helpful documentation links:\n"
     response += "\n".join(f"- {link}" for link in useful_links)
@@ -432,6 +455,115 @@ def answer_from_document_retrieval(
         for idx, node in enumerate(potentially_relevant_qa_nodes, start=1):
             response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
     return response
+
+
+def answer_from_document_retrieval_nodes(
+    product: str, original_query: str, generated_query: str, conversation_history: str
+) -> str:
+    """
+    RAG Search. Searches through a database of 10,000 documents, and based on a query, returns the top-10 relevant documents and synthesizes an answer.
+    Return a JSON string with response and top 10 reranked nodes.
+    """
+    response = ""
+    qa_system_prompt = QA_SYSTEM_PROMPT
+    query = generated_query or original_query
+
+    product_enum = PRODUCT.get_product(product)
+    if product_enum == PRODUCT.IDDM:
+        product_versions = IDDM_PRODUCT_VERSIONS
+        version_pattern = re.compile(r"v?\d+\.\d+", re.IGNORECASE)
+        document_index = IDDM_INDEX
+        qa_pairs_index = IDDM_QA_PAIRS_INDEX
+        default_document_retriever = IDDM_RETRIEVER
+        default_qa_pairs_retriever = IDDM_QA_PAIRS_RETRIEVER
+    else:
+        product_versions = IDA_PRODUCT_VERSIONS
+        version_pattern = re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
+        document_index = IDA_INDEX
+        qa_pairs_index = IDA_QA_PAIRS_INDEX
+        default_document_retriever = IDA_RETRIEVER
+        default_qa_pairs_retriever = IDA_QA_PAIRS_RETRIEVER
+
+    if matched_versions := get_matching_versions(
+        original_query, product_versions, version_pattern
+    ):
+        qa_system_prompt += f"\n10. Mention the product version(s) you used to craft your response were '{' and '.join(matched_versions)}'"
+        lance_filter_documents = " OR ".join(f"(metadata.version = '{version}')" for version in matched_versions)
+        lance_filter_qa_pairs = (
+            f"(metadata.version = 'none') OR {lance_filter_documents}"
+        )
+        document_retriever = document_index.as_retriever(
+            vector_store_kwargs={"where": lance_filter_documents}, similarity_top_k=50
+        )
+        qa_pairs_retriever = qa_pairs_index.as_retriever(
+            vector_store_kwargs={"where": lance_filter_qa_pairs}, similarity_top_k=8
+        )
+    else:
+        qa_system_prompt += "\n10. At the beginning of your response, mention that because a specific product version was not specified, information from all available versions was used."
+        document_retriever = default_document_retriever
+        qa_pairs_retriever = default_qa_pairs_retriever
+
+    qa_nodes = qa_pairs_retriever.retrieve(query)
+    relevant_qa_nodes = []
+    potentially_relevant_qa_nodes = []
+
+    for node in qa_nodes:
+        if 0.85 <= node.score <= 1.0:
+            relevant_qa_nodes.append(node)
+        elif 0.7 <= node.score < 0.85:
+            potentially_relevant_qa_nodes.append(node)
+
+    if relevant_qa_nodes:
+        response += "Here are some relevant QA pairs that have been verified by an expert!\n"
+        for idx, node in enumerate(relevant_qa_nodes, start=1):
+            response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
+        response += "\n\nAfter searching through the documentation database, this was found:\n"
+
+    try:
+        nodes = document_retriever.retrieve(query)
+    except Warning:
+        return "No relevant documents were found for this query."
+    reranked_nodes = RERANKER.postprocess_nodes(nodes=nodes, query_str=query)[:10]
+    useful_links = list(dict.fromkeys([node.metadata["github_url"] for node in reranked_nodes]))[:3]
+    raw_chunks = "\n\n".join(f"{node.text}" for node in reranked_nodes)
+    formatted_chunks = format_tables_in_chunks(raw_chunks)
+
+    user_prompt = QA_USER_PROMPT.replace("<CONTEXT>", formatted_chunks)
+    user_prompt = user_prompt.replace("<CONVERSATION_HISTORY>", conversation_history)
+    user_prompt = user_prompt.replace("<QUESTION>", original_query)
+
+    llm_response = ""
+    for chunk in completion(
+        model=LLM_MODEL, 
+        messages=[
+            {"role": "system", "content": qa_system_prompt}, 
+            {"role": "user", "content": user_prompt}
+        ],
+        stream=True,  # Enable streaming
+    ):
+        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
+            content = chunk.choices[0].delta.content
+            llm_response += content
+    
+    response += llm_response
+
+    # Format links as plain markdown links to avoid double HTML conversion
+    response += "\n\nHere are some potentially helpful documentation links:"
+    for link in useful_links:
+        # Extract the last part of the URL to use as link text
+        path_parts = link.split('/')
+        filename = path_parts[-1]
+        response += f"\n- [{filename}]({link})"
+
+    if potentially_relevant_qa_nodes and not relevant_qa_nodes:
+        response += "\n\n\n"
+        response += "In addition, here are some potentially relevant QA pairs that have been verified by an expert!\n"
+        for idx, node in enumerate(potentially_relevant_qa_nodes, start=1):
+            response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
+
+    nodes_info = [{"text": node.text, "metadata": node.metadata} for node in reranked_nodes]
+    response_dict = {"response": response, "reranked_nodes": nodes_info}
+    return json.dumps(response_dict)
 
 
 def get_matching_versions(query, product_versions, version_pattern):
