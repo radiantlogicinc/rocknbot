@@ -1,4 +1,6 @@
 lancedb/
+sql-generator/
+postgres_copilot.mdc
 
 # Logs
 logs
