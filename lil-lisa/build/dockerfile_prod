@@ -1,0 +1,33 @@
+# Use a base image with Python and required dependencies
+FROM continuumio/miniconda3:latest AS builder
+
+# prepare conda
+RUN conda update conda
+RUN conda update --all
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Update Conda and create the environment
+COPY ./build/environment.yml /app/
+RUN conda env create -f environment.yml
+
+COPY src /app/src
+RUN mkdir /app/app_envfiles
+RUN touch /app/app_envfiles/lil-lisa.env
+
+# # Expose any necessary ports (if applicable)
+# EXPOSE 80
+
+ENV PYTHONUNBUFFERED=1
+
+# Define the command to run your app in release mode (so log level is INFO)
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa", "python", "-O", "src/slack.py"]
+
+FROM chainguard/wolfi-base:latest
+COPY --from=builder /opt/conda/envs/lil-lisa /usr/local/env
+COPY --from=builder /app /app
+ENV PATH="/usr/local/env/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+ENTRYPOINT ["python","-O", "src/slack.py"]

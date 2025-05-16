@@ -1,0 +1,37 @@
+# Use a base image with Python and required dependencies
+FROM continuumio/miniconda3:latest AS builder
+
+# RUN apt-get update && \
+#     apt-get upgrade -y && \
+#     apt-get install -y git
+
+# prepare conda
+RUN conda update conda
+RUN conda update --all
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Update Conda and create the environment
+COPY ./build/environment.yml /app/
+RUN conda env create -f environment.yml
+
+# Copy the app code and files to the container
+COPY data /app/data
+COPY src /app/src
+
+RUN mkdir speedict
+
+ENV PYTHONUNBUFFERED=1
+
+# Set the CMD to your handler
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "LilLisa_Server", "uvicorn", "src.main:app", "--host=0.0.0.0"]
+
+FROM chainguard/wolfi-base:latest
+RUN apk update && apk add git libstdc++
+COPY --from=builder /opt/conda/envs/LilLisa_Server /usr/local/env
+COPY --from=builder /app /app
+ENV PATH="/usr/local/env/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+ENTRYPOINT ["python","-m","uvicorn", "src.main:app", "--host=0.0.0.0"]
