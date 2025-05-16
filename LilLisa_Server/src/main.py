@@ -64,6 +64,7 @@ from src.llama_index_lancedb_vector_store import LanceDBVectorStore
 from src.llama_index_markdown_reader import MarkdownReader
 
 logging.getLogger("LiteLLM").setLevel(logging.INFO)
+logging.getLogger("LiteLLM").handlers.clear()
 
 # Global configuration variables
 REACT_AGENT_PROMPT = None  # Path to the React agent prompt file
@@ -371,6 +372,7 @@ async def invoke_stream_html(
     Raises:
         HTTPException: On internal errors or invalid input.
     """
+    utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
     llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
     if is_expert_answering:
         llsc.add_to_conversation_history("Expert", nl_query)

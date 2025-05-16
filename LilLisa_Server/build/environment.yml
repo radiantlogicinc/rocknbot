@@ -22,3 +22,4 @@ dependencies:
     - tiktoken==0.7.0
     - uvicorn==0.34.2
     - litellm==1.63.14
+    - python-json-logger==3.3.0

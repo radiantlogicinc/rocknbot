@@ -99,20 +99,23 @@ log_formatter = FormatterNs(LOG_FORMAT)
 # create logger
 logger = logging.getLogger("RL_Logger")
 logger.setLevel(LOG_LEVEL)
-logger.propagate = False  # otherwise you will see duplicate log entries
 
-# # clear any existing handlers for our logger
-logger.handlers.clear()
+if LOG_LEVEL == "DEBUG":
 
-# create console handler and set level to debug
-ch = logging.StreamHandler()
-ch.setLevel(LOG_LEVEL)
+    logger.propagate = False  # otherwise you will see duplicate log entries
 
-# create and add formatter to ch
-ch.setFormatter(log_formatter)
+    # # clear any existing handlers for our logger
+    logger.handlers.clear()
 
-# add ch to logger
-logger.addHandler(ch)
+    # create console handler and set level to debug
+    ch = logging.StreamHandler()
+    ch.setLevel(LOG_LEVEL)
+
+    # create and add formatter to ch
+    ch.setFormatter(log_formatter)
+
+    # add ch to logger
+    logger.addHandler(ch)
 
 
 # create a separate logger for pytest_logger to log assertions
