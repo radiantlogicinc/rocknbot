@@ -22,6 +22,11 @@ from utils import logger
 
 lil_lisa_env = dotenv_values("./app_envfiles/lil-lisa.env")
 
+lil_lisa_env = {
+    **lil_lisa_env,
+    **os.environ,  # override loaded values with environment variables
+}
+
 LIL_LISA_SLACK_USERID = lil_lisa_env["LIL_LISA_SLACK_USERID"]
 SLACK_BOT_TOKEN = lil_lisa_env["SLACK_BOT_TOKEN"]
 SLACK_APP_TOKEN = lil_lisa_env["SLACK_APP_TOKEN"]
