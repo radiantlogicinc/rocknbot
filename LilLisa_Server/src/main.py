@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import json
 import tempfile
 import zipfile
@@ -17,7 +18,7 @@ import jwt
 import litellm
 import tiktoken
 import uvicorn
-from fastapi import FastAPI, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
@@ -63,7 +64,26 @@ from src.lillisa_server_context import LOCALE, LilLisaServerContext
 from src.llama_index_lancedb_vector_store import LanceDBVectorStore
 from src.llama_index_markdown_reader import MarkdownReader
 
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
+
+from opentelemetry.metrics import set_meter_provider
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+
 logging.getLogger("LiteLLM").setLevel(logging.INFO)
+logging.getLogger("LiteLLM").handlers.clear()
 
 # Global configuration variables
 REACT_AGENT_PROMPT = None  # Path to the React agent prompt file
@@ -298,7 +318,44 @@ async def init_lance_databases():
         utils.logger.critical("Golden QA pairs rebuild failed during startup: %s", rebuild_exc, exc_info=True)
         raise RuntimeError("Golden QA pairs rebuild failed during startup.") from rebuild_exc
 
+# Initialize OpenTelemetry
+# Traces
+trace.set_tracer_provider(TracerProvider())
+otlp_exporter = OTLPSpanExporter()
+span_processor = BatchSpanProcessor(otlp_exporter)
+trace.get_tracer_provider().add_span_processor(span_processor)
+
+#Logs
+logger_provider = LoggerProvider()
+set_logger_provider(logger_provider)
+logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
+handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
+# Attach OTLP handler to root logger
+logging.getLogger().addHandler(handler)
+
+# Metrics
+metrics_exporter = OTLPMetricExporter()
+reader = PeriodicExportingMetricReader(metrics_exporter)
+meter_provider = MeterProvider(metric_readers=[reader])
+set_meter_provider(meter_provider)
+
+# Custom metrics
+meter = meter_provider.get_meter(__name__)
+metrics_fastapi_requests_total = meter.create_counter("fastapi_requests_total")
+metrics_fastapi_responses_total = meter.create_counter("fastapi_responses_total")
+metrics_fastapi_exceptions_total = meter.create_counter("fastapi_exceptions_total")
+metrics_fastapi_requests_duration_seconds = meter.create_histogram("fastapi_requests_duration_seconds")
+metrics_fastapi_requests_in_progress = meter.create_up_down_counter("fastapi_requests_in_progress")
+
+# Initialize FastAPI app
 app = FastAPI(lifespan=lifespan)
+
+# Instrument FastAPI with OpenTelemetry
+FastAPIInstrumentor.instrument_app(
+    app,
+    excluded_urls="^/docs$",
+    http_capture_headers_server_response=["rli-product","rli-locale"]
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -309,6 +366,25 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+@app.middleware("http")
+async def custom_metrics(request: Request, call_next):
+    if request.url.path =="/docs":
+        return await call_next(request)
+    attributes = {"path":request.url.path,"method":request.method}
+    attributes["product"]=request.query_params.get("product")
+    attributes["locale"]=request.query_params.get("locale")
+    metrics_fastapi_requests_total.add(1,attributes)
+    metrics_fastapi_requests_in_progress.add(1,attributes)
+    start_time = time.time()
+    try:
+        response = await call_next(request)
+        attributes["status_code"] = str(response.status_code)
+        metrics_fastapi_responses_total.add(1,attributes)
+        return response
+    finally:
+        duration = time.time() - start_time
+        metrics_fastapi_requests_duration_seconds.record(duration,attributes)
+        metrics_fastapi_requests_in_progress.add(-1,attributes)
 
 # -----------------------------------------------------------------------------
 # Utility Functions
@@ -371,6 +447,8 @@ async def invoke_stream_html(
     Raises:
         HTTPException: On internal errors or invalid input.
     """
+    utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
+    custom_headers = {"rli-product":product,"rli-locale": locale}
     llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
     if is_expert_answering:
         llsc.add_to_conversation_history("Expert", nl_query)
@@ -380,7 +458,7 @@ async def invoke_stream_html(
             formatted_q = re.sub(r"(https?://[^\s'\"<]+)", r'<a href="\1" target="_blank">\1</a>', formatted_q)
             formatted_q = formatted_q.replace("\n", "<br>")
             yield f"ANS: {formatted_q}\n"
-        return StreamingResponse(expert_gen(), media_type="text/html")
+        return StreamingResponse(expert_gen(), media_type="text/html",headers=custom_headers)
     # Build agent
     conversation_history = "\n".join(f"{p}: {m}" for p, m in llsc.conversation_history)
     tools = [
@@ -499,7 +577,7 @@ async def invoke_stream_html(
                     yield f"ANS: {chunk}\n"
                     # await asyncio.sleep(0.025)
 
-    return StreamingResponse(streamer(), media_type="text/html")
+    return StreamingResponse(streamer(), media_type="text/html",headers=custom_headers)
 
 @app.post("/invoke/", response_model=str, response_class=PlainTextResponse)
 def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool) -> str:
@@ -521,6 +599,7 @@ def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_
     """
     try:
         utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
+        custom_headers = {"rli-product":product,"rli-locale": locale}
         llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
 
         if is_expert_answering:
@@ -548,11 +627,13 @@ def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_
         response = react_agent.chat(react_agent_prompt).response
         llsc.add_to_conversation_history("User", nl_query)
         llsc.add_to_conversation_history("Assistant", response)
-        return response
+        return PlainTextResponse(response,headers=custom_headers)
 
     except HTTPException as exc:
+        metrics_fastapi_exceptions_total.add(1,custom_headers)
         raise exc
     except Exception as exc:
+        metrics_fastapi_exceptions_total.add(1,custom_headers)
         if isinstance(exc, ValueError) and "Reached max iterations." in str(exc):
             final_response = llm.last_thought or ""
             utils.logger.info("Returning last thought for session %s: %s", session_id, final_response)
