@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 import json
+import datetime
 import tempfile
 import zipfile
 import pathlib
@@ -17,7 +18,7 @@ import jwt
 import litellm
 import tiktoken
 import uvicorn
-from fastapi import FastAPI, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
@@ -51,7 +52,6 @@ from src.agent_and_tools import (
     IDDM_PRODUCT_VERSIONS,
     PRODUCT,
     answer_from_document_retrieval,
-    answer_from_document_retrieval_nodes,
     get_matching_versions,
     handle_user_answer,
     improve_query,
@@ -347,8 +347,8 @@ def get_llsc(
 # -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
-@app.post("/invoke_stream_html/", response_class=StreamingResponse)
-async def invoke_stream_html(
+@app.post("/invoke_stream_with_nodes/", response_class=StreamingResponse)
+async def invoke_stream_with_nodes(
     session_id: str,
     locale: str,
     product: str,
@@ -356,33 +356,37 @@ async def invoke_stream_html(
     is_expert_answering: bool
 ):
     """
-    Processes a natural language query ans stream the reasoning and final answer.
+    Streams CoT and ANS in HTML format and includes top 10 nodes in the stream.
 
     Args:
         session_id (str): Unique identifier for the session.
-        locale (str): Locale of the conversation.
+        locale (str): Locale of the conversation ("en", etc.).
         product (str): Product ("IDA" or "IDDM").
         nl_query (str): Natural language query or expert answer.
         is_expert_answering (bool): Indicates if an expert is providing the answer.
 
     Returns:
-        str: Response from AI or expert answer.
+        StreamingResponse: Streams "QUERY_ID: <id>", "COT: <html>", "ANS: <html>", and "NODES: <json>" lines.
 
     Raises:
         HTTPException: On internal errors or invalid input.
     """
     llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
+
+    # Generate query ID before processing
+    query_id = f"{session_id}_{llsc.query_counter + 1}"
+
     if is_expert_answering:
-        llsc.add_to_conversation_history("Expert", nl_query)
         async def expert_gen():
-            formatted_q = nl_query.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            formatted_q = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", formatted_q)
-            formatted_q = re.sub(r"(https?://[^\s'\"<]+)", r'<a href="\1" target="_blank">\1</a>', formatted_q)
-            formatted_q = formatted_q.replace("\n", "<br>")
-            yield f"ANS: {formatted_q}\n"
+            formatted_q = format_to_html(nl_query)
+            chunks = html_chunk_text(formatted_q)
+            yield f"QUERY_ID: {query_id}\n"
+            for chunk in chunks:
+                yield f"ANS: {chunk}\n"
         return StreamingResponse(expert_gen(), media_type="text/html")
-    # Build agent
-    conversation_history = "\n".join(f"{p}: {m}" for p, m in llsc.conversation_history)
+
+    # Build agent with tools including answer_from_document_retrieval
+    conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
     tools = [
         FunctionTool.from_defaults(fn=improve_query),
         FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
@@ -392,7 +396,7 @@ async def invoke_stream_html(
     react_agent = StreamingReActAgent.from_tools(
         tools=tools,
         llm=llm,
-        verbose=False,
+        verbose=(utils.LOG_LEVEL == utils.logging.DEBUG),
         max_iterations=MAX_ITERATIONS,
     )
     prompt = (
@@ -402,27 +406,27 @@ async def invoke_stream_html(
         .replace("<QUERY>", nl_query)
     )
 
-    llsc.add_to_conversation_history("User", nl_query)
+    def format_to_html(t: str) -> str:
+        t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+        t = re.sub(
+            r'(https?://[^\s\'\"<)]+(?:\([^\s)]*\)[^\s\'\"<)]*)*)',
+            r'<a href="\1" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
+            t
+        )
+        
+        return t.replace("\n", "<br>")
 
     def chunk_text(text: str, max_length: int) -> list[str]:
-        """
-        Splits `text` into a list of chunks where each chunk (except possibly
-        single very long words) is no longer than max_length characters, without
-        splitting words.
-        """
         words = text.split()
         chunks = []
         current_chunk = ""
         for word in words:
-            # If the current word itself is longer than max_length,
-            # yield the current_chunk (if any) and then yield the full word.
             if len(word) > max_length:
                 if current_chunk:
                     chunks.append(current_chunk.strip())
                     current_chunk = ""
                 chunks.append(word)
                 continue
-            # If adding the word would exceed max_length, finish the current chunk.
             if len(current_chunk) + len(word) + 1 > max_length:
                 chunks.append(current_chunk.strip())
                 current_chunk = f"{word} "
@@ -433,88 +437,81 @@ async def invoke_stream_html(
         return chunks
 
     def html_chunk_text(html_text: str) -> list[str]:
-        """
-        Splits an HTML string into a list of substrings immediately before each
-        <br> tag, keeping the tag with the following chunk.
-        
-        Args:
-            html_text: The input HTML string.
-            
-        Returns:
-            A list of strings split immediately before <br> tags.
-        """
         br_pattern = r'<br\s*/?>'
         matches = list(re.finditer(br_pattern, html_text, flags=re.IGNORECASE))
         chunks = []
-
-        # Handle the case with no <br> tags
         if not matches:
             return [html_text] if html_text else []
-
-        # Process first chunk (before first <br>)
         first_match = matches[0]
         if first_match.start() > 0:
             chunks.append(html_text[:first_match.start()])
-
-        # Process chunks at each <br> tag
         for i in range(len(matches)):
             current_match = matches[i]
             current_br = html_text[current_match.start():current_match.end()]
-
-            # If this is the last <br> tag
             if i == len(matches) - 1:
                 chunks.append(current_br + html_text[current_match.end():])
             else:
                 next_match = matches[i + 1]
                 chunks.append(current_br + html_text[current_match.end():next_match.start()])
-
         return chunks
 
     async def streamer() -> AsyncGenerator[str, None]:
-        def format_to_html(t: str) -> str:
-            # Convert markdown bold to HTML strong tag.
-            t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
-            # Replace URLs with an anchor tag that has inline styling.
-            t = re.sub(
-                r"(https?://[^\s'\"<]+)",
-                r'<a href="\1" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
-                t
-            )
-
-            return t.replace("\n", "<br>")
-
-
+        yield f"QUERY_ID: {query_id}\n"
 
         for phase, text in react_agent.stream_chat(prompt):
             if phase == "cot":
-                chunks = chunk_text(text, 50)  # 50-character chunks for CoT
+                chunks = chunk_text(text, 50)
                 for chunk in chunks:
                     yield f"COT: {format_to_html(chunk)}\n"
                     await asyncio.sleep(0.5)
-            else:  # phase == "ans"
-                llsc.add_to_conversation_history("Assistant", text)
-                html_answer = format_to_html(text)
+            elif phase == "ans":
+                try:
+                    response_dict = json.loads(text)
+                    response_text = response_dict.get("response", text)
+                    nodes = response_dict.get("reranked_nodes", [])
+                except json.JSONDecodeError:
+                    response_text = text
+                    nodes = []
+
+                html_answer = format_to_html(response_text)
                 chunks = html_chunk_text(html_answer)
                 for chunk in chunks:
                     yield f"ANS: {chunk}\n"
-                    # await asyncio.sleep(0.025)
+                if nodes:
+                    yield f"NODES: {json.dumps(nodes)}\n"
+                    # Store the nodes in the context for later use in record_endorsement
+                    if not hasattr(llsc, 'query_artifacts'):
+                        llsc.query_artifacts = {}
+                    if query_id not in llsc.query_artifacts:
+                        llsc.query_artifacts[query_id] = {}
+                    llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
+                    llsc.save_context()  # Save the updated context
+                
+                llsc.add_to_conversation_history("User", nl_query, query_id)
+                llsc.add_to_conversation_history("Assistant", response_text, query_id)
 
     return StreamingResponse(streamer(), media_type="text/html")
 
-@app.post("/invoke/", response_model=str, response_class=PlainTextResponse)
-def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_answering: bool) -> str:
+@app.post("/invoke/")
+def invoke(
+    session_id: str,
+    locale: str,
+    product: str,
+    nl_query: str,
+    is_expert_answering: bool
+):
     """
-    Processes a natural language query or expert answer without streaming.
+    Processes a natural language query or expert answer and returns a JSON response for Slack.
 
     Args:
         session_id (str): Unique identifier for the session.
-        locale (str): Locale of the conversation.
+        locale (str): Locale of the conversation (e.g., "en").
         product (str): Product ("IDA" or "IDDM").
         nl_query (str): Natural language query or expert answer.
         is_expert_answering (bool): Indicates if an expert is providing the answer.
 
     Returns:
-        str: Response from AI or expert answer.
+        dict: JSON object containing 'response', 'reranked_nodes', and 'query_id'.
 
     Raises:
         HTTPException: On internal errors or invalid input.
@@ -523,11 +520,20 @@ def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_
         utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
         llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
 
-        if is_expert_answering:
-            llsc.add_to_conversation_history("Expert", nl_query)
-            return nl_query
+        # Generate query ID
+        query_id = f"{session_id}_{llsc.query_counter + 1}"
 
-        conversation_history = "\n".join(f"{poster}: {message}" for poster, message in llsc.conversation_history)
+        # Handle expert answering case
+        if is_expert_answering:
+            llsc.add_to_conversation_history("Expert", nl_query, query_id)
+            return {
+                "response": nl_query,
+                "reranked_nodes": [],
+                "query_id": query_id
+            }
+
+        # Prepare agent with tools
+        conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
         tools = [
             FunctionTool.from_defaults(fn=improve_query),
             FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
@@ -541,14 +547,43 @@ def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_
             max_iterations=MAX_ITERATIONS
         )
         react_agent_prompt = (
-            REACT_AGENT_PROMPT.replace("<PRODUCT>", product)
+            REACT_AGENT_PROMPT
+            .replace("<PRODUCT>", product)
             .replace("<CONVERSATION_HISTORY>", conversation_history)
             .replace("<QUERY>", nl_query)
         )
+
+        # Get response from agent
         response = react_agent.chat(react_agent_prompt).response
-        llsc.add_to_conversation_history("User", nl_query)
-        llsc.add_to_conversation_history("Assistant", response)
-        return response
+
+        # Parse response to extract text and nodes
+        try:
+            response_dict = json.loads(response)
+            response_text = response_dict.get("response", response)
+            nodes = response_dict.get("reranked_nodes", [])
+        except json.JSONDecodeError:
+            response_text = response
+            nodes = []
+
+        # Add assistant and user response to conversation history
+        llsc.add_to_conversation_history("User", nl_query, query_id)
+        llsc.add_to_conversation_history("Assistant", response_text, query_id)
+
+        # Store nodes in context if available
+        if nodes:
+            if not hasattr(llsc, 'query_artifacts'):
+                llsc.query_artifacts = {}
+            if query_id not in llsc.query_artifacts:
+                llsc.query_artifacts[query_id] = {}
+            llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
+            llsc.save_context()
+
+        # Return JSON response
+        return {
+            "response": response_text,
+            "reranked_nodes": nodes,
+            "query_id": query_id
+        }
 
     except HTTPException as exc:
         raise exc
@@ -556,131 +591,41 @@ def invoke(session_id: str, locale: str, product: str, nl_query: str, is_expert_
         if isinstance(exc, ValueError) and "Reached max iterations." in str(exc):
             final_response = llm.last_thought or ""
             utils.logger.info("Returning last thought for session %s: %s", session_id, final_response)
-            llsc.add_to_conversation_history("User", nl_query)
-            llsc.add_to_conversation_history("Assistant", final_response)
-            return final_response
+            llsc.add_to_conversation_history("User", nl_query, query_id)
+            llsc.add_to_conversation_history("Assistant", final_response, query_id)
+            return {
+                "response": final_response,
+                "reranked_nodes": [],
+                "query_id": query_id
+            }
         utils.logger.critical("Internal error in invoke() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc)
         raise HTTPException(status_code=500, detail=f"Internal error in invoke() for session_id: {session_id}") from exc
 
-@app.post("/invoke_with_nodes/")
-async def invoke_with_nodes(
-    session_id: str,
-    locale: str,
-    product: str,
-    nl_query: str,
-    is_expert_answering: bool,
-    include_nodes: bool
-):
-    """
-    Processes a natural language query or expert answer without streaming.
-
-    Args:
-        session_id (str): Unique identifier for the session.
-        locale (str): Locale of the conversation.
-        product (str): Product ("IDA" or "IDDM").
-        nl_query (str): Natural language query or expert answer.
-        is_expert_answering (bool): Indicates if an expert is providing the answer.
-        include_nodes (bool): Whether to include the top 10 nodes in the response.
-
-    Returns:
-        str: Response from AI with top 10 nodes.
-
-    Raises:
-        HTTPException: On internal errors or invalid input.
-    """
-    def format_text_to_html(text_content: str) -> str:
-        """
-        Formats a given text string to HTML.
-        """
-        if not isinstance(text_content, str): # Ensure input is a string
-            text_content = str(text_content)
-
-        processed_text = text_content
-        
-        # 1. Convert markdown bold to HTML strong tag.
-        processed_text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", processed_text)
-        
-        # 2. Convert markdown links [text](URL) to HTML anchor tags
-        processed_text = re.sub(
-            r"\[([^\]]+?)\]\((https?://[^\s\)]+)\)",
-            r'<a href="\2" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
-            processed_text
-        )
-        
-        # 3. Convert standalone URLs (not already in an href attribute of an <a> tag) to clickable links
-        processed_text = re.sub(
-            r"(?<!href=['\"])(?<!\]\()(https?://[^\s'\"<>]+)",
-            r'<a href="\1" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
-            processed_text
-        )
-        
-        # 4. Replace newline characters with <br> tags.
-        return processed_text.replace("\n", "<br>")
-    llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
-    
-    final_answer_text = ""  # This will hold the raw text to be formatted
-    reranked_nodes = []
-
-    if is_expert_answering:
-        llsc.add_to_conversation_history("Expert", nl_query)
-        final_answer_text = nl_query
-    else:
-        conversation_history = "\n".join(f"{p}: {m}" for p, m in llsc.conversation_history)
-        tools = [
-            FunctionTool.from_defaults(fn=improve_query),
-            FunctionTool.from_defaults(fn=answer_from_document_retrieval_nodes, return_direct=True),
-            FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
-        ]
-        llm = LiteLLM(model=LLM_MODEL)
-        react_agent = ReActAgent.from_tools(
-            tools=tools,
-            llm=llm,
-            verbose=(utils.LOG_LEVEL == utils.logging.DEBUG),
-            max_iterations=MAX_ITERATIONS
-        )
-        prompt_payload = (
-            REACT_AGENT_PROMPT
-            .replace("<PRODUCT>", product)
-            .replace("<CONVERSATION_HISTORY>", conversation_history)
-            .replace("<QUERY>", nl_query)
-        )
-        llsc.add_to_conversation_history("User", nl_query)
-        
-        agent_response_str = react_agent.chat(prompt_payload).response
-        
-        # Attempt to clean and parse the agent's response
-        cleaned_response_str = agent_response_str
-        observation_prefix = "Observation: "
-        if agent_response_str.startswith(observation_prefix):
-            cleaned_response_str = agent_response_str[len(observation_prefix):].strip()
-
-        # Expecting cleaned_response_str to be a JSON string from answer_from_document_retrieval_nodes
-        response_dict = json.loads(cleaned_response_str)
-        final_answer_text = response_dict.get('response', '') # Extract the actual answer
-        reranked_nodes = response_dict.get('reranked_nodes', [])
-        
-        llsc.add_to_conversation_history("Assistant", final_answer_text if isinstance(final_answer_text, str) else json.dumps(final_answer_text))
-
-    # Apply HTML formatting to the extracted final_answer_text
-    formatted_final_answer_html = format_text_to_html(final_answer_text)
-
-    response_data = {"final_answer": formatted_final_answer_html}
-    if include_nodes:
-        response_data["reranked_nodes"] = reranked_nodes # Nodes are not HTML formatted here
-    
-    return response_data
-
-
-
 @app.post("/record_endorsement/", response_model=str, response_class=PlainTextResponse)
-async def record_endorsement(session_id: str, is_expert: bool, thumbs_up: bool) -> str:
+async def record_endorsement(
+    session_id: str, 
+    is_expert: bool, 
+    thumbs_up: bool, 
+    endorsement_type: str, 
+    query_id: str = None,
+    chunk_index: int = None,
+    chunk_text: str = None,
+    chunk_url: str = None,
+    chunk_data: dict = Body(None)
+) -> str:
     """
-    Records an endorsement for a conversation.
+    Records an endorsement for a conversation or individual source chunk.
 
     Args:
         session_id (str): Unique identifier for the session.
         is_expert (bool): True if the endorsement is from an expert.
         thumbs_up (bool): True if the endorsement is positive.
+        endorsement_type (str): The type of endorsement ("response" or "chunks").
+        query_id (str, optional): The query ID to associate the endorsement with.
+        chunk_index (int, optional): Index of the specific source chunk being rated (0-based).
+        chunk_text (str, optional): Text of the specific chunk being rated.
+        chunk_url (str, optional): GitHub URL of the specific chunk being rated.
+        chunk_data (dict, optional): Alternative way to provide chunk_text and chunk_url in request body.
 
     Returns:
         str: "ok" on success.
@@ -689,9 +634,87 @@ async def record_endorsement(session_id: str, is_expert: bool, thumbs_up: bool) 
         HTTPException: On internal errors.
     """
     try:
-        utils.logger.info("session_id: %s, is_expert: %s, thumbs_up: %s", session_id, is_expert, thumbs_up)
         llsc = get_llsc(session_id)
-        llsc.record_endorsement(is_expert, thumbs_up)
+
+        # Check if chunk data was sent in request body
+        if chunk_data is not None and endorsement_type == "chunks":
+            chunk_text = chunk_data.get("chunk_text", chunk_text)
+            chunk_url = chunk_data.get("chunk_url", chunk_url)
+
+        # Determine the query_id if not explicitly provided
+        current_query_id = query_id
+        if not current_query_id and llsc.conversation_history:
+            # Try to find the last query_id associated with User or Assistant
+            for p, _, qid_hist in reversed(llsc.conversation_history):
+                if p == "User" or p == "Assistant":
+                    current_query_id = qid_hist
+                    break
+        
+        user_query_message = None
+        if current_query_id:
+            user_query_message = next(
+                (msg for poster, msg, qid_hist in llsc.conversation_history if poster == "User" and qid_hist == current_query_id),
+                None
+            )
+
+        # For chunk-specific feedback
+        if endorsement_type == "chunks" and chunk_text is not None:
+            timestamp = datetime.datetime.utcnow().isoformat()
+            feedback_src = "expert" if is_expert else "user"
+            thumbs_up_log_value = 1 if thumbs_up else 0
+            
+            # Log chunk-specific feedback
+            chunk_log = {
+                "timestamp": timestamp,
+                "product": llsc.product.value,
+                "session_id": llsc.session_id,
+                "query_id": current_query_id,
+                "query": user_query_message,
+                "chunk": chunk_text,
+                "github_url": chunk_url,
+                "thumbs_up": thumbs_up_log_value,
+                "feedback_src": feedback_src,  # Fixed here
+                "chunk_index": chunk_index
+            }
+            utils.logger.info(f"Document Chunk: {json.dumps(chunk_log)}")
+            return "ok"
+            
+        # Retrieve reranked_nodes from query_artifacts
+        reranked_nodes = []
+        if current_query_id and hasattr(llsc, 'query_artifacts'):
+            artifacts = llsc.query_artifacts.get(current_query_id, {})
+            reranked_nodes = artifacts.get("reranked_nodes", [])
+
+        # Simplify the reranked_nodes to only include text and github_url
+        simplified_nodes = []
+        for node in reranked_nodes:
+            simplified_node = {
+                "text": node.get("text", ""),
+                "metadata": {
+                    "github_url": node.get("metadata", {}).get("github_url", "")
+                }
+            }
+            simplified_nodes.append(simplified_node)
+
+        timestamp = datetime.datetime.utcnow().isoformat()
+        feedback_src = "expert" if is_expert else "user"
+        
+        # Convert boolean thumbs_up to 1 or 0 for logging
+        thumbs_up_log_value = 1 if thumbs_up else 0
+        # Log the message
+        log_message = {
+            "timestamp": timestamp,
+            "product": llsc.product.value,
+            "session_id": llsc.session_id,
+            "query_id": current_query_id,
+            "query": user_query_message,
+            "data_sources": simplified_nodes,
+            "thumbs_up": thumbs_up_log_value,
+            "feedback_src": feedback_src  # Fixed here
+        }
+
+        # Log the message to the console
+        utils.logger.info(f"Response: {json.dumps(log_message)}")
         return "ok"
     except HTTPException as exc:
         raise exc
@@ -700,7 +723,6 @@ async def record_endorsement(session_id: str, is_expert: bool, thumbs_up: bool) 
         raise HTTPException(
             status_code=500, detail=f"Internal error in record_endorsement() for session_id: {session_id}"
         ) from exc
-
 
 @app.post("/get_golden_qa_pairs/")
 async def get_golden_qa_pairs(product: str, encrypted_key: str) -> FileResponse:
@@ -902,7 +924,12 @@ async def get_conversations(product: str, endorsed_by: str, encrypted_key: str) 
             zip_stream = io.BytesIO()
             with zipfile.ZipFile(zip_stream, "w") as zipf:
                 for i, conversation in enumerate(useful_conversations, start=1):
-                    conversation_history = "\n".join(f"{poster}: {message}" for poster, message in conversation)
+                    # Format conversation history including query IDs
+                    conversation_history_lines = []
+                    for poster, message, query_id in conversation:
+                        conversation_history_lines.append(f"{poster}: {message} [Query ID: {query_id}]")
+                    
+                    conversation_history = "\n".join(conversation_history_lines)
                     zipf.writestr(f"conversation_{i}.md", conversation_history.encode("utf-8"))
             zip_stream.seek(0)
             return StreamingResponse(

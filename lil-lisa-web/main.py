@@ -32,10 +32,10 @@ app = Flask(__name__)
 def generate_unique_session_id() -> str:
     return str(uuid.uuid4())
 
-@app.route("/api/chat_cot", methods=["POST"])
-def api_chat_cot():
+@app.route("/api/stream_with_nodes", methods=["POST"])
+def api_stream_with_nodes():
     """
-    Proxies the request to /invoke_stream_html and streams the chunks back to the browser as chunked text.
+    Proxies the request to /invoke_stream_with_nodes and streams the response to the browser.
     """
     data = request.get_json()
     session_id = data.get("session_id") or generate_unique_session_id()
@@ -44,7 +44,7 @@ def api_chat_cot():
     locale = data.get("locale", "en-US")
     is_expert = data.get("is_expert", False)
 
-    invoke_url = f"{BASE_URL}/invoke_stream_html/"
+    invoke_url = f"{BASE_URL}/invoke_stream_with_nodes/"
     params = {
         "session_id": session_id,
         "locale": locale,
@@ -53,67 +53,69 @@ def api_chat_cot():
         "is_expert_answering": is_expert
     }
     try:
-        resp = requests.post(invoke_url, params=params, timeout=90, stream=True)
+        resp = requests.post(invoke_url, params=params, timeout=180, stream=True)
         resp.raise_for_status()
 
         def generate():
-            for chunk in resp.iter_content(chunk_size=128):
+            buffer = b''
+            for chunk in resp.iter_content(chunk_size=1024):
                 if chunk:
-                    yield chunk
+                    buffer += chunk
+                    while b'\n' in buffer or b'. ' in buffer:
+                        if b'\n' in buffer:
+                            part, buffer = buffer.split(b'\n', 1)
+                            yield part + b'\n'
+                        elif b'. ' in buffer:
+                            part, buffer = buffer.split(b'. ', 1)
+                            yield part + b'. '
+                            
+                    if len(buffer) > 4096:
+                        yield buffer
+                        buffer = b''
+            if buffer:
+                yield buffer
         return Response(generate(), mimetype='text/html')
     except requests.exceptions.Timeout as e:
         logger.error(f"Request timed out: {str(e)}")
         return "Request timed out", 504, {'Content-Type': 'text/plain'}
     except requests.exceptions.RequestException as e:
-        logger.error(f"Request error while retrieving CoT response: {str(e)}")
+        logger.error(f"Request error while retrieving stream with nodes: {str(e)}")
         return f"Failed to communicate with the server: {str(e)}", 503, {'Content-Type': 'text/plain'}
     except Exception as e:
-        logger.error(f"Internal error while retrieving CoT response: {str(e)}")
+        logger.error(f"Internal error while retrieving stream with nodes: {str(e)}")
         logger.error(traceback.format_exc())
         return f"Internal server error: {e}", 500, {'Content-Type': 'text/plain'}
 
-@app.route("/api/with_nodes", methods=["POST"])
-def api_with_nodes():
-    """
-    Proxies the request to /invoke_with_nodes and returns the final answer with top 10 nodes.
-    The markdown response is formatted as HTML for consistent browser rendering.
-    """
+@app.route("/api/thumbsfeedback", methods=["POST"])
+def api_thumbsfeedback():
     data = request.get_json()
-    session_id = data.get("session_id") or generate_unique_session_id()
-    product = data.get("product")
-    nl_query = data.get("query")
-    locale = data.get("locale", "en-US")
-    is_expert = data.get("is_expert", False)
-    include_nodes = data.get("include_nodes", True)
-
-    invoke_url = f"{BASE_URL}/invoke_with_nodes/"
-    params = {
-        "session_id": session_id,
-        "locale": locale,
-        "product": product,
-        "nl_query": nl_query,
-        "is_expert_answering": is_expert,
-        "include_nodes": include_nodes
-    }
+    session_id = data.get("session_id")
+    thumbs_up = data.get("thumbs_up")
+    chunk_index = data.get("chunk_index")
+    chunk_text = data.get("chunk_text")
+    chunk_url = data.get("chunk_url")
+    
     try:
-        # Increased timeout from 90 to 180 seconds
-        resp = requests.post(invoke_url, params=params, timeout=180)
+        thumb_url = f"{BASE_URL}/record_endorsement/"
+        params = {
+            "session_id": session_id, 
+            "is_expert": False, 
+            "thumbs_up": thumbs_up, 
+            "endorsement_type": "chunks",
+            "chunk_index": chunk_index,
+        }
+
+        json_data = {
+            "chunk_text": chunk_text,
+            "chunk_url": chunk_url if chunk_url else ""
+        }
+        resp = requests.post(thumb_url, params=params, json=json_data,timeout=10)
         resp.raise_for_status()
-        
-        # Get JSON response from the server
-        response_data = resp.json()
-        return jsonify(response_data)
-    except requests.exceptions.Timeout as e:
-        logger.error(f"Request timed out: {str(e)}")
-        # Custom error message for timeout
-        return jsonify({"error": "Unable to get the response. We are trying to fix the server. Please try again later."}), 504
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Request error while retrieving nodes response: {str(e)}")
-        return jsonify({"error": f"Failed to communicate with the server: {str(e)}"}), 503
+        result = resp.text
     except Exception as e:
-        logger.error(f"Internal error while retrieving nodes response: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": f"Internal server error: {e}"}), 500
+        traceback.print_exc()
+        result = f"Error: {str(e)}"
+    return jsonify({"result": result})
 
 @app.route("/api/thumbsup", methods=["POST"])
 def api_thumbsup():
@@ -121,7 +123,7 @@ def api_thumbsup():
     session_id = data.get("session_id")
     try:
         thumb_url = f"{BASE_URL}/record_endorsement/"
-        params = {"session_id": session_id, "is_expert": False, "thumbs_up": True}
+        params = {"session_id": session_id, "is_expert": False, "thumbs_up": True, "endorsement_type": "response"}
         resp = requests.post(thumb_url, params=params, timeout=10)
         resp.raise_for_status()
         result = resp.text
@@ -136,7 +138,7 @@ def api_thumbsdown():
     session_id = data.get("session_id")
     try:
         thumb_url = f"{BASE_URL}/record_endorsement/"
-        params = {"session_id": session_id, "is_expert": False, "thumbs_up": False}
+        params = {"session_id": session_id, "is_expert": False, "thumbs_up": False, "endorsement_type": "response"}
         resp = requests.post(thumb_url, params=params, timeout=10)
         resp.raise_for_status()
         result = resp.text

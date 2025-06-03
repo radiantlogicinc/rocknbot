@@ -108,6 +108,30 @@
             color: #334e68;
         }
 
+        .source-node-feedback {
+            margin-top: 8px;
+            text-align: right;
+        }
+
+        .source-node-feedback .thumb-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+            margin-left: 5px;
+            opacity: 0.7;
+            transition: opacity 0.3s;
+        }
+
+        .source-node-feedback .thumb-btn:hover {
+            opacity: 1;
+        }
+
+        .source-node-feedback.locked .thumb-btn {
+            opacity: 0.5;
+            cursor: default;
+        }
+
         #chrome-container {
             transition: all 0.3s ease-in-out;
             background: #ffffff;
@@ -468,10 +492,6 @@
                 <div class="checkbox-container" id="start-new-chat-checkbox-container">
                     <input type="checkbox" id="start-new-chat-checkbox">
                     <span class="tooltip">Start New Chat</span>
-                </div>
-                <div class="checkbox-container" id="show-sources-checkbox-container">
-                    <input type="checkbox" id="show-sources-checkbox">
-                    <span class="tooltip">Show Top 10 Sources</span>
                 </div>
             </div>
             <!-- Scroll-to-bottom button -->
@@ -852,10 +872,6 @@
             queryInput.value = '';
             removeLoadingIndicator();
 
-            // Check if the user wants to see top sources
-            const showSourcesCheckbox = document.getElementById('show-sources-checkbox');
-            const showSources = showSourcesCheckbox && showSourcesCheckbox.checked;
-
             let locale = 'en-US';
             const langCheckbox = document.getElementById('global-language-checkbox');
             if (langCheckbox && langCheckbox.checked) {
@@ -866,63 +882,58 @@
                 sessions[currentProduct].sessionId = generateUniqueSessionId();
             }
 
-            if (showSources) {
-                // Use invoke_with_nodes endpoint
-                await sendQueryWithNodes(userQuery, locale);
-            } else {
-                // Use streaming endpoint
-                const uniqueId = createUniqueId("query");
-                const messagesDiv = document.getElementById("messages-" + currentProduct);
+            // Use streaming endpoint
+            const uniqueId = createUniqueId("query");
+            const messagesDiv = document.getElementById("messages-" + currentProduct);
 
-                // Create the description container for progress indicator.
-                const descriptionDiv = document.createElement("div");
-                descriptionDiv.id = "description-container-" + uniqueId;
-                descriptionDiv.className = "assistant-message description";
-                messagesDiv.appendChild(descriptionDiv);
+            // Create the description container for progress indicator.
+            const descriptionDiv = document.createElement("div");
+            descriptionDiv.id = "description-container-" + uniqueId;
+            descriptionDiv.className = "assistant-message description";
+            messagesDiv.appendChild(descriptionDiv);
 
-                // Start the progress indicator sequence.
-                const progressTimers = startProgressIndicator(descriptionDiv);
+            // Start the progress indicator sequence.
+            const progressTimers = startProgressIndicator(descriptionDiv);
 
-                // Create the CoT container.
-                const cotDiv = document.createElement("div");
-                cotDiv.id = "cot-container-" + uniqueId;
-                cotDiv.className = "assistant-message cot";
-                cotDiv.style.display = "none";  // Initially hidden
-                messagesDiv.appendChild(cotDiv);
+            // Create the CoT container.
+            const cotDiv = document.createElement("div");
+            cotDiv.id = "cot-container-" + uniqueId;
+            cotDiv.className = "assistant-message cot";
+            cotDiv.style.display = "none";  // Initially hidden
+            messagesDiv.appendChild(cotDiv);
 
-                // Create the final answer container.
-                const answerDiv = document.createElement("div");
-                answerDiv.id = "answer-container-" + uniqueId;
-                answerDiv.className = "assistant-message";
-                answerDiv.style.display = "none";
-                messagesDiv.appendChild(answerDiv);
+            // Create the final answer container.
+            const answerDiv = document.createElement("div");
+            answerDiv.id = "answer-container-" + uniqueId;
+            answerDiv.className = "assistant-message";
+            answerDiv.style.display = "none";
+            messagesDiv.appendChild(answerDiv);
 
-                try {
-                    const response = await fetch('/api/chat_cot', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            session_id: sessions[currentProduct].sessionId,
-                            product: currentProduct,
-                            query: userQuery,
-                            locale: locale,
-                            is_expert: false
-                        })
-                    });
+            try {
+                const response = await fetch('/api/stream_with_nodes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessions[currentProduct].sessionId,
+                        product: currentProduct,
+                        query: userQuery,
+                        locale: locale,
+                        is_expert: false
+                    })
+                });
 
-                    if (!response.ok) {
-                        if (descriptionDiv) descriptionDiv.remove();
-                        appendMessage(`[Error] ${await response.text()}`, 'assistant');
-                        return;
-                    }
-
-                    const reader = response.body.getReader();
-                    processStreamData(reader, descriptionDiv, cotDiv, answerDiv);
-                } catch (err) {
-                    console.error('Error:', err);
+                if (!response.ok) {
                     if (descriptionDiv) descriptionDiv.remove();
-                    appendMessage("[Error: Failed to get response]", 'assistant');
+                    appendMessage(`[Error] ${await response.text()}`, 'assistant');
+                    return;
                 }
+
+                const reader = response.body.getReader();
+                processStreamData(reader, descriptionDiv, cotDiv, answerDiv);
+            } catch (err) {
+                console.error('Error:', err);
+                if (descriptionDiv) descriptionDiv.remove();
+                appendMessage("[Error: Failed to get response]", 'assistant');
             }
 
             if (!sessions[currentProduct].firstQuerySent) {
@@ -979,48 +990,104 @@
         async function processStreamData(reader, descriptionDiv, cotDiv, answerDiv) {
             const decoder = new TextDecoder();
             let cotStarted = false;
+            let rerankedNodes = [];          // Hold final array from the JSON
+            let rawBuffer = "";              // Accumulate every raw chunk here
             cotDiv.innerHTML = "";
+
+            // For debugging
+            console.log("Starting to process stream data");
 
             async function pump() {
                 const { done, value } = await reader.read();
                 if (done) {
-                    // Add feedback buttons once streaming is complete
+                    console.log("Stream ended, raw buffer length:", rawBuffer.length);
+                    console.log("Raw buffer end snippet:", rawBuffer.substring(rawBuffer.length - 200));
+
+                    // STREAM ENDED. Now parse rawBuffer for the final JSON block.
+                    // Look for "NODES: " marker or JSON object
+                    let jsonData = null;
+
+                    // First try to find "NODES: " marker which might appear at the end of the answer
+                    const nodesMarker = rawBuffer.indexOf("NODES: ");
+                    if (nodesMarker !== -1) {
+                        try {
+                            const nodesJson = rawBuffer.substring(nodesMarker + 7); // 7 is length of "NODES: "
+                            jsonData = JSON.parse(nodesJson);
+                            console.log("Found nodes marker, parsing:", nodesJson.substring(0, 100));
+                        } catch (err) {
+                            console.error("Error parsing JSON after NODES marker:", err);
+                        }
+                    }
+
+                    // If that fails, try looking for a standalone JSON object
+                    if (!jsonData) {
+                        const firstBrace = rawBuffer.indexOf("{");
+                        if (firstBrace !== -1) {
+                            const possibleJson = rawBuffer.slice(firstBrace);
+                            try {
+                                console.log("Trying to parse JSON from brace:", possibleJson.substring(0, 100));
+                                jsonData = JSON.parse(possibleJson);
+                            } catch (err) {
+                                console.error("Error parsing JSON from brace index:", err);
+                            }
+                        }
+                    }
+
+                    // Extract reranked nodes from the parsed JSON
+                    if (jsonData) {
+                        if (Array.isArray(jsonData)) {
+                            rerankedNodes = jsonData;
+                            console.log("Found reranked nodes array directly:", rerankedNodes.length);
+                        } else if (Array.isArray(jsonData.reranked_nodes)) {
+                            rerankedNodes = jsonData.reranked_nodes;
+                            console.log("Found reranked nodes in object:", rerankedNodes.length);
+                        }
+                    }
+
+                    // Add thumbs-up thumbs-down buttons now that answerDiv is visible.
                     if (answerDiv.style.display === "block") {
-                        const feedbackDiv = document.createElement('div');
-                        feedbackDiv.classList.add('feedback-container');
-                        feedbackDiv.innerHTML = '<button class="thumb-btn up">👍</button>' +
+                        const feedbackDiv = document.createElement("div");
+                        feedbackDiv.classList.add("feedback-container");
+                        feedbackDiv.innerHTML =
+                            '<button class="thumb-btn up">👍</button>' +
                             '<button class="thumb-btn down">👎</button>';
                         answerDiv.appendChild(feedbackDiv);
 
-                        const upBtn = feedbackDiv.querySelector('.thumb-btn.up');
-                        const downBtn = feedbackDiv.querySelector('.thumb-btn.down');
+                        const upBtn = feedbackDiv.querySelector(".thumb-btn.up");
+                        const downBtn = feedbackDiv.querySelector(".thumb-btn.down");
 
-                        upBtn.addEventListener('click', function () {
+                        upBtn.addEventListener("click", () => {
                             if (feedbackDiv.classList.contains("locked")) return;
                             feedbackDiv.classList.add("locked");
                             upBtn.disabled = true;
                             downBtn.disabled = true;
-                            submitFeedback('thumbsup');
+                            submitFeedback("thumbsup");
                         });
 
-                        downBtn.addEventListener('click', function () {
+                        downBtn.addEventListener("click", () => {
                             if (feedbackDiv.classList.contains("locked")) return;
                             feedbackDiv.classList.add("locked");
                             downBtn.disabled = true;
                             upBtn.disabled = true;
-                            submitFeedback('thumbsdown');
+                            // Now that we parsed rerankedNodes, show them:
+                            displayRerankedNodes(rerankedNodes, answerDiv);
+                            submitFeedback("thumbsdown");
                         });
                     }
+
                     return;
                 }
 
+                // Decode and append to rawBuffer for JSON parsing later
                 const text = decoder.decode(value, { stream: true });
+                rawBuffer += text;
+
+                // Split off any new COT/ANS markers so we can stream them as before.
                 const chunks = text.split(/(?=COT:|ANS:)/);
                 for (const chunk of chunks) {
                     if (chunk.startsWith("COT:")) {
                         if (!cotStarted) {
                             cotStarted = true;
-                            // Change description text when COT starts streaming
                             if (descriptionDiv) {
                                 updateProgressText(descriptionDiv, "Preparing final answer");
                             }
@@ -1028,23 +1095,178 @@
                         }
                         const cotContent = chunk.slice(4);
                         await streamContent(cotDiv, cotContent, 100);
-                    } else if (chunk.startsWith("ANS:")) {
-                        if (descriptionDiv) {
-                            descriptionDiv.remove();
-                        }
-                        if (cotDiv) {
-                            cotDiv.style.display = "none";
-                        }
-                        answerDiv.style.display = "block";
-                        await streamContent(answerDiv, chunk.slice(4), 50);
                     }
+                    else if (chunk.startsWith("ANS:")) {
+                        // Extract just the answer content, not any JSON or NODES: at the end
+                        let ansContent = chunk.slice(4);
+
+                        // Remove any JSON or NODES: marker
+                        const jsonStart = ansContent.indexOf('{"');
+                        const nodesMarker = ansContent.indexOf('NODES: ');
+
+                        // Find which comes first (if either exists)
+                        let cutoffPoint = -1;
+                        if (jsonStart !== -1 && nodesMarker !== -1) {
+                            cutoffPoint = Math.min(jsonStart, nodesMarker);
+                        } else if (jsonStart !== -1) {
+                            cutoffPoint = jsonStart;
+                        } else if (nodesMarker !== -1) {
+                            cutoffPoint = nodesMarker;
+                        }
+
+                        // Trim the content if needed
+                        if (cutoffPoint !== -1) {
+                            ansContent = ansContent.substring(0, cutoffPoint);
+                        }
+
+                        if (descriptionDiv) descriptionDiv.remove();
+                        if (cotDiv) cotDiv.style.display = "none";
+                        answerDiv.style.display = "block";
+                        await streamContent(answerDiv, ansContent, 50);
+                    }
+                    // JSON at the end is simply appended to rawBuffer. We will parse it once done.
                 }
+
                 if (autoScrollEnabled) {
                     window.scrollTo(0, document.body.scrollHeight);
                 }
                 pump();
             }
+
             pump();
+        }
+
+        // Display reranked source information when thumbs-down is clicked
+        // function displayRerankedNodes(nodes, answerDiv) {
+        //     console.log("displayRerankedNodes called with nodes:", nodes);
+        //     if (!nodes || nodes.length === 0) {
+        //         console.log("No nodes to display");
+        //         return;
+        //     }
+
+        //     const sourceNodesContainer = document.createElement('div');
+        //     sourceNodesContainer.className = "source-nodes-container";
+        //     sourceNodesContainer.innerHTML = '<div class="source-nodes-title">Top Sources:</div>';
+
+        //     nodes.forEach((node, index) => {
+        //         if (!node || !node.text) return;
+
+        //         const nodeDiv = document.createElement('div');
+        //         nodeDiv.className = "source-node";
+
+        //         // Format the text - truncate if too long
+        //         // const text = node.text.length > 300 ? node.text.substring(0, 300) + "..." : node.text;
+
+        //         const text = node.text
+
+
+        //         // Create the content in the requested format
+        //         nodeDiv.innerHTML = `
+        //     <strong>Source ${index + 1}:</strong>
+        //     <div>${text}</div>
+        //     ${node.metadata ? `
+        //         <div>GitHub URL: <a href="${node.metadata.github_url || '#'}" target="_blank">${node.metadata.github_url || 'N/A'}</a></div>
+        //     ` : ''}
+        // `;
+
+        //         sourceNodesContainer.appendChild(nodeDiv);
+        //     });
+
+        //     // Append the sources container after the answer div
+        //     answerDiv.parentNode.appendChild(sourceNodesContainer);
+        // }
+
+        function displayRerankedNodes(nodes, answerDiv) {
+            console.log("displayRerankedNodes called with nodes:", nodes);
+            if (!nodes || nodes.length === 0) {
+                console.log("No nodes to display");
+                return;
+            }
+
+            const sourceNodesContainer = document.createElement('div');
+            sourceNodesContainer.className = "source-nodes-container";
+            sourceNodesContainer.innerHTML = '<div class="source-nodes-title">Top Sources:</div>';
+
+            nodes.forEach((node, index) => {
+                if (!node || !node.text) return;
+
+                const nodeDiv = document.createElement('div');
+                nodeDiv.className = "source-node";
+
+                // Get the text and github_url
+                const nodeText = node.text;
+                const githubUrl = node.metadata && node.metadata.github_url ? node.metadata.github_url : '#';
+
+                // Create the node content
+                nodeDiv.innerHTML = `
+                <strong>Source ${index + 1}:</strong>
+                <div>${nodeText}</div>
+                <div class="source-url">
+                    <a href="${githubUrl}" target="_blank">Source Documentation</a>
+                </div>
+            `;
+
+                // Add feedback buttons for this source node
+                const feedbackDiv = document.createElement('div');
+                feedbackDiv.className = 'source-node-feedback';
+                //     feedbackDiv.innerHTML = `
+                //     <span>Was this source helpful?</span>
+                //     <button class="thumb-btn up" title="This source was helpful">👍</button>
+                //     <button class="thumb-btn down" title="This source was not helpful">👎</button>
+                // `;
+                feedbackDiv.innerHTML = `
+                <button class="thumb-btn up" title="This source was helpful">👍</button>
+                <button class="thumb-btn down" title="This source was not helpful">👎</button>
+            `;
+                nodeDiv.appendChild(feedbackDiv);
+
+                // Add event listeners for thumbs up/down
+                const upBtn = feedbackDiv.querySelector('.thumb-btn.up');
+                const downBtn = feedbackDiv.querySelector('.thumb-btn.down');
+
+                upBtn.addEventListener('click', function () {
+                    if (feedbackDiv.classList.contains("locked")) return;
+                    feedbackDiv.classList.add("locked");
+                    upBtn.disabled = true;
+                    downBtn.disabled = true;
+                    submitChunkFeedback(index, nodeText, githubUrl, true);
+                    showFeedbackPopup("Thank you for rating this source!");
+                });
+
+                downBtn.addEventListener('click', function () {
+                    if (feedbackDiv.classList.contains("locked")) return;
+                    feedbackDiv.classList.add("locked");
+                    downBtn.disabled = true;
+                    upBtn.disabled = true;
+                    submitChunkFeedback(index, nodeText, githubUrl, false);
+                    showFeedbackPopup("Thank you for rating this source!");
+                });
+
+                sourceNodesContainer.appendChild(nodeDiv);
+            });
+
+            // Append the sources container after the answer div
+            answerDiv.parentNode.appendChild(sourceNodesContainer);
+        }
+
+        // Add a function to submit chunk feedback
+        async function submitChunkFeedback(chunkIndex, chunkText, chunkUrl, isThumbsUp) {
+            try {
+                const response = await fetch('/api/thumbsfeedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessions[currentProduct].sessionId,
+                        thumbs_up: isThumbsUp,
+                        chunk_index: chunkIndex,
+                        chunk_text: chunkText,
+                        chunk_url: chunkUrl
+                    })
+                });
+                await response.json();
+            } catch (err) {
+                console.error('Chunk feedback submission error:', err);
+            }
         }
 
         function selectProduct(product) {
