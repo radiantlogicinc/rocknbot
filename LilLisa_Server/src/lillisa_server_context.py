@@ -112,10 +112,12 @@ class LilLisaServerContext:  # pylint: disable=too-many-instance-attributes, too
                     query_id = qid
                     break
             
-            # If no previous User message found, generate a new ID
+            # If no previous User message found, handle this edge case with a unique ID
             if not query_id:
+                utils.logger.warning(f"Adding a {poster} message with no associated User query - this may cause tracking issues")
+                query_id = f"{self.session_id}_system_{self.query_counter}"
                 self.query_counter += 1
-                query_id = f"{self.session_id}_{self.query_counter}"
+
         
         # Append the message with its query ID
         self.conversation_history.append((poster, message, query_id))
@@ -127,7 +129,7 @@ class LilLisaServerContext:  # pylint: disable=too-many-instance-attributes, too
                 None
             )
             if user_query:
-                timestamp = datetime.datetime.utcnow().isoformat()
+                timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 log_message = {
                     "timestamp": timestamp,
                     "product": self.product.value,

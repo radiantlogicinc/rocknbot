@@ -37,8 +37,6 @@ EXPERT_USER_ID_IDA = lil_lisa_env["EXPERT_USER_ID_IDA"]
 EXPERT_USER_ID_IDDM = lil_lisa_env["EXPERT_USER_ID_IDDM"]
 AUTHENTICATION_KEY = lil_lisa_env["AUTHENTICATION_KEY"]
 ENCRYPTED_AUTHENTICATION_KEY = jwt.encode({"some": "payload"}, AUTHENTICATION_KEY, algorithm="HS256")  # type: ignore
-
-# Add configurable message length limit
 MAX_LENGTH = int(lil_lisa_env["MAX_LENGTH"])
 
 BASE_URL = os.getenv("LIL_LISA_SERVER_URL", lil_lisa_env["LIL_LISA_SERVER_URL"])
@@ -165,24 +163,26 @@ async def record_endorsement(conv_id, is_expert, thumbs_up, endorsement_type="re
         # Call the record_endorsement API
         full_url = f"{BASE_URL}/record_endorsement/"
         
+        # Common parameters
+        params = {
+            "session_id": str(conv_id),
+            "is_expert": is_expert,
+            "thumbs_up": thumbs_up,
+            "endorsement_type": endorsement_type
+        }
+        if query_id is not None:
+            params["query_id"] = query_id
+            
         # For chunk-specific endorsements, send large text data in the body
         if endorsement_type == "chunks" and chunk_text is not None:
-            # These parameters stay in the URL for both types
-            params = {
-                "session_id": str(conv_id),
-                "is_expert": is_expert,
-                "thumbs_up": thumbs_up,
-                "endorsement_type": endorsement_type
-            }
-            if query_id is not None:
-                params["query_id"] = query_id
+            # Add chunk-specific parameter
             if chunk_index is not None:
                 params["chunk_index"] = chunk_index
                 
             # Send chunk text and URL in the request body
             json_data = {
                 "chunk_text": chunk_text,
-                "chunk_url": chunk_url if chunk_url else ""
+                "chunk_url": chunk_url or ""
             }
             
             # Use json parameter for request body
@@ -193,16 +193,7 @@ async def record_endorsement(conv_id, is_expert, thumbs_up, endorsement_type="re
                 timeout=60,
             )
         else:
-            # Regular response endorsement - all parameters in URL as before
-            params = {
-                "session_id": str(conv_id),
-                "is_expert": is_expert,
-                "thumbs_up": thumbs_up,
-                "endorsement_type": endorsement_type
-            }
-            if query_id is not None:
-                params["query_id"] = query_id
-                
+            # Regular response endorsement - all parameters already in params
             requests.post(
                 full_url,
                 params=params,
@@ -211,7 +202,6 @@ async def record_endorsement(conv_id, is_expert, thumbs_up, endorsement_type="re
     except Exception as exc:  # pylint: disable=broad-except
         logger.error(f"An error occurred during the asynchronous call record_endorsement: {exc}")
         return "An error occured"
-
 
 async def process_msg(event, say):
     """

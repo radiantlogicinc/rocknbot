@@ -69,9 +69,18 @@ def api_stream_with_nodes():
                             part, buffer = buffer.split(b'. ', 1)
                             yield part + b'. '
                             
-                    if len(buffer) > 4096:
-                        yield buffer
-                        buffer = b''
+                    # Only force buffer flush if it's extremely large
+                    if len(buffer) > 16384:  # 16KB - safety threshold
+                        # Try to find last space to break more intelligently
+                        last_space = buffer.rfind(b' ')
+                        if last_space > 0 and last_space > len(buffer) // 2:
+                            yield buffer[:last_space+1]
+                            buffer = buffer[last_space+1:]
+                        else:
+                            # If no good space found, yield half the buffer
+                            middle = len(buffer) // 2
+                            yield buffer[:middle]
+                            buffer = buffer[middle:]
             if buffer:
                 yield buffer
         return Response(generate(), mimetype='text/html')
@@ -107,7 +116,7 @@ def api_thumbsfeedback():
 
         json_data = {
             "chunk_text": chunk_text,
-            "chunk_url": chunk_url if chunk_url else ""
+            "chunk_url": chunk_url or ""
         }
         resp = requests.post(thumb_url, params=params, json=json_data,timeout=10)
         resp.raise_for_status()

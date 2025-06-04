@@ -1263,6 +1263,9 @@
                         chunk_url: chunkUrl
                     })
                 });
+                if (!response.ok) {
+                    console.error('Error submitting chunk feedback:', response.status);
+                }
                 await response.json();
             } catch (err) {
                 console.error('Chunk feedback submission error:', err);

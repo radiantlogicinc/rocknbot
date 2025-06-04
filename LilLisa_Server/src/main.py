@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import html
 import json
 import datetime
 import tempfile
@@ -25,6 +26,7 @@ from fastapi.responses import (
     HTMLResponse,
     PlainTextResponse,
     StreamingResponse,
+    JSONResponse
 )
 from litellm import completion
 from llama_index.core import (
@@ -407,14 +409,15 @@ async def invoke_stream_with_nodes(
     )
 
     def format_to_html(t: str) -> str:
-        t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
-        t = re.sub(
+        escaped = html.escape(t)
+        escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+        escaped = re.sub(
             r'(https?://[^\s\'\"<)]+(?:\([^\s)]*\)[^\s\'\"<)]*)*)',
             r'<a href="\1" target="_blank" style="color:blue;text-decoration:underline;">\1</a>',
-            t
+            escaped
         )
         
-        return t.replace("\n", "<br>")
+        return escaped.replace("\n", "<br>")
 
     def chunk_text(text: str, max_length: int) -> list[str]:
         words = text.split()
@@ -492,7 +495,7 @@ async def invoke_stream_with_nodes(
 
     return StreamingResponse(streamer(), media_type="text/html")
 
-@app.post("/invoke/")
+@app.post("/invoke/", response_model=dict, response_class=JSONResponse)
 def invoke(
     session_id: str,
     locale: str,
@@ -924,10 +927,11 @@ async def get_conversations(product: str, endorsed_by: str, encrypted_key: str) 
             zip_stream = io.BytesIO()
             with zipfile.ZipFile(zip_stream, "w") as zipf:
                 for i, conversation in enumerate(useful_conversations, start=1):
-                    # Format conversation history including query IDs
-                    conversation_history_lines = []
-                    for poster, message, query_id in conversation:
-                        conversation_history_lines.append(f"{poster}: {message} [Query ID: {query_id}]")
+                    # Format conversation history using list comprehension
+                    conversation_history_lines = [
+                        f"{poster}: {message} [Query ID: {query_id}]"
+                        for poster, message, query_id in conversation
+                    ]
                     
                     conversation_history = "\n".join(conversation_history_lines)
                     zipf.writestr(f"conversation_{i}.md", conversation_history.encode("utf-8"))
