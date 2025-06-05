@@ -371,8 +371,10 @@ async def custom_metrics(request: Request, call_next):
     if request.url.path =="/docs":
         return await call_next(request)
     attributes = {"path":request.url.path,"method":request.method}
-    attributes["product"]=request.query_params.get("product")
-    attributes["locale"]=request.query_params.get("locale")
+    if request.query_params.get("product"):
+        attributes["product"]=request.query_params.get("product")
+    if request.query_params.get("locale"):
+        attributes["locale"]=request.query_params.get("locale")
     metrics_fastapi_requests_total.add(1,attributes)
     metrics_fastapi_requests_in_progress.add(1,attributes)
     start_time = time.time()
