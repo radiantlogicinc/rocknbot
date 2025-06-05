@@ -519,6 +519,7 @@ def invoke(
     Raises:
         HTTPException: On internal errors or invalid input.
     """
+    nodes = []
     try:
         utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
         llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
@@ -592,13 +593,22 @@ def invoke(
         raise exc
     except Exception as exc:
         if isinstance(exc, ValueError) and "Reached max iterations." in str(exc):
-            final_response = llm.last_thought or ""
-            utils.logger.info("Returning last thought for session %s: %s", session_id, final_response)
+            # LLM call to update llm.last_thought
+            chat_messages = [ChatMessage(role="user", content=react_agent_prompt)]
+            # Make the fallback call. The LiteLLM.chat method updates self.last_thought on success.
+            llm.chat(chat_messages)
+
+            #Add llm.last_thought to final_response
+            final_response = llm.last_thought
+            
+            utils.logger.info("Returning last thought for session %s \n Query id: %s\n Response: %s", session_id, query_id,final_response)
+
             llsc.add_to_conversation_history("User", nl_query, query_id)
             llsc.add_to_conversation_history("Assistant", final_response, query_id)
+            #return json response with final_response and nodes
             return {
                 "response": final_response,
-                "reranked_nodes": [],
+                "reranked_nodes": nodes,
                 "query_id": query_id
             }
         utils.logger.critical("Internal error in invoke() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc)
