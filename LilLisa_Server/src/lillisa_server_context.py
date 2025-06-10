@@ -90,58 +90,72 @@ class LilLisaServerContext:  # pylint: disable=too-many-instance-attributes, too
 
     def add_to_conversation_history(self, poster: str, message: str, query_id: str = None):
         """
-        Add to the conversation history with a unique queryId
-        
-        Args:
-            poster (str): The poster of the message (User, Assistant, Expert)
-            message (str): The message content
-            query_id (str, optional): A specific query ID if provided, otherwise generated automatically
-        """
-        if poster == "User":
-            # Increment query counter for new user queries
-            self.query_counter += 1
-            # Generate query ID if not provided
-            if not query_id:
-                query_id = f"{self.session_id}_{self.query_counter}"
-        
-        # For responses (Assistant/Expert), use the last query ID if not provided
-        elif not query_id and self.conversation_history:
-            # Find the last query ID from a User message
-            for p, _, qid in reversed(self.conversation_history):
-                if p == "User":
-                    query_id = qid
-                    break
-            
-            # If no previous User message found, handle this edge case with a unique ID
-            if not query_id:
-                utils.logger.warning(f"Adding a {poster} message with no associated User query - this may cause tracking issues")
-                query_id = f"{self.session_id}_system_{self.query_counter}"
-                self.query_counter += 1
+        Add to the conversation history with a unique query_id.
 
-        
-        # Append the message with its query ID
-        self.conversation_history.append((poster, message, query_id))
-        if poster == "Assistant":
-            # Find the user query with the same query_id
-            user_query = next(
-                (msg for p, msg, qid in reversed(self.conversation_history) 
-                 if p == "User" and qid == query_id), 
-                None
-            )
-            if user_query:
-                timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                log_message = {
-                    "timestamp": timestamp,
-                    "product": self.product.value,
-                    "session_id": self.session_id,
-                    "query_id": query_id,
-                    "query": user_query,
-                    "response": message,
-                    "thumbs_up": None,
-                    "feedback_src": None
-                }
-                utils.logger.info(f"Responses: {json.dumps(log_message)}")
-        self.save_context()
+        Args:
+            poster (str): The poster of the message ("User", "Assistant", "Expert").
+            message (str): The message content.
+            query_id (str, optional): A specific query ID if provided (used for "Assistant" or "Expert").
+
+        Returns:
+            str: The query_id used or generated for this message.
+        """
+        with keyvalue_db_lock:
+            if poster == "User":
+                # Increment counter and generate a new query_id for user queries
+                self.query_counter += 1
+                query_id = f"{self.session_id}_{self.query_counter}"
+            elif not query_id:
+                # Look for most recent user's query_id
+                for p, _, qid in reversed(self.conversation_history):
+                    if p == "User":
+                        query_id = qid
+                        break
+                else:
+                    # Fallback for no prior user query (e.g., system-initiated messages)
+                    self.query_counter += 1
+                    query_id = f"{self.session_id}_System_{self.query_counter}"
+
+            # Append the message to history with the query_id
+            self.conversation_history.append((poster, message, query_id))
+            self.save_context()
+
+            # Log the assistant's response
+            if poster == "Assistant":
+                self.log_response(query_id, message)
+
+            return query_id
+
+    def log_response(self, query_id: str, response: str):
+        """
+        Logs the user query and assistant response for a given query_id.
+
+        Args:
+            query_id (str): The query ID associated with the response.
+            response (str): The assistant's response message.
+        """
+        # Find the user query with the same query_id
+        user_query = next(
+            (msg for p, msg, qid in self.conversation_history if p == "User" and qid == query_id),
+            None
+        )
+        if user_query:
+            # Prepare the log message with all required details
+            timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            log_message = {
+                "timestamp": timestamp,
+                "product": self.product.value,
+                "session_id": self.session_id,
+                "query_id": query_id,
+                "query": user_query,
+                "response": response,
+                "thumbs_up": None,
+                "feedback_src": None
+            }
+            utils.logger.info(f"Response: {json.dumps(log_message)}")
+        else:
+            utils.logger.warning(f"No user query found for query_id {query_id}")
+
 
     @staticmethod
     def get_db_folderpath(session_id: str) -> str:

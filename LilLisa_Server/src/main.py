@@ -175,19 +175,8 @@ class StreamingReActAgent(ReActAgent):
                     return
         except Exception as e:
             utils.logger.error(f"Stream error: {str(e)}")
-            # Check if the error indicates we reached max iterations.
             if "Reached max iterations." in str(e):
-                final_answer = accumulated.strip()
-                # If nothing has been accumulated, perform a fallback non-streaming call.
-                if not final_answer:
-                    try:
-                        # Call the non-streaming chat to retrieve the final observation.
-                        response = self.llm.chat([ChatMessage(role="user", content=prompt)]).message.content
-                        final_answer = response
-                    except Exception as fallback_e:
-                        utils.logger.error(f"Fallback call failed: {fallback_e}")
-                        final_answer = "No response produced."
-                yield "ans", final_answer
+                yield "fallback", None
             else:
                 yield "ans", f"ANS: Error: Unable to process request due to {str(e)}. Please try again."
 
@@ -375,8 +364,7 @@ async def invoke_stream_with_nodes(
     """
     llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
 
-    # Generate query ID before processing
-    query_id = f"{session_id}_{llsc.query_counter + 1}"
+    query_id = llsc.add_to_conversation_history("User", nl_query)
 
     if is_expert_answering:
         async def expert_gen():
@@ -489,9 +477,45 @@ async def invoke_stream_with_nodes(
                         llsc.query_artifacts[query_id] = {}
                     llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
                     llsc.save_context()  # Save the updated context
+                else:
+                    # If no nodes from response, check stored nodes in context
+                    if hasattr(llsc, "query_artifacts") and query_id in llsc.query_artifacts:
+                        stored_nodes = llsc.query_artifacts[query_id].get("reranked_nodes", [])
+                        if stored_nodes:
+                            yield f"NODES: {json.dumps(stored_nodes)}\n"
+
                 
-                llsc.add_to_conversation_history("User", nl_query, query_id)
                 llsc.add_to_conversation_history("Assistant", response_text, query_id)
+            elif phase == "fallback":
+                conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
+                raw = answer_from_document_retrieval(
+                    product=product,
+                    original_query=nl_query,
+                    generated_query=None,
+                    conversation_history=conversation_history
+                )
+                try:
+                    result = json.loads(raw)
+                    final_response = result["response"]
+                    nodes = result["reranked_nodes"]
+                except json.JSONDecodeError:
+                    final_response = raw
+                    nodes = []
+
+                html_answer = format_to_html(final_response)
+                chunks = html_chunk_text(html_answer)
+                for chunk in chunks:
+                    yield f"ANS: {chunk}\n"
+                if nodes:
+                    yield f"NODES: {json.dumps(nodes)}\n"
+                    if not hasattr(llsc, 'query_artifacts'):
+                        llsc.query_artifacts = {}
+                    if query_id not in llsc.query_artifacts:
+                        llsc.query_artifacts[query_id] = {}
+                    llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
+                    llsc.save_context()
+
+                llsc.add_to_conversation_history("Assistant", final_response, query_id)
 
     return StreamingResponse(streamer(), media_type="text/html")
 
@@ -524,8 +548,8 @@ def invoke(
         utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
         llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
 
-        # Generate query ID
-        query_id = f"{session_id}_{llsc.query_counter + 1}"
+        # Add user query and get the generated query_id
+        query_id = llsc.add_to_conversation_history("User", nl_query)
 
         # Handle expert answering case
         if is_expert_answering:
@@ -570,7 +594,6 @@ def invoke(
             nodes = []
 
         # Add assistant and user response to conversation history
-        llsc.add_to_conversation_history("User", nl_query, query_id)
         llsc.add_to_conversation_history("Assistant", response_text, query_id)
 
         # Store nodes in context if available
@@ -593,19 +616,30 @@ def invoke(
         raise exc
     except Exception as exc:
         if isinstance(exc, ValueError) and "Reached max iterations." in str(exc):
-            # LLM call to update llm.last_thought
-            chat_messages = [ChatMessage(role="user", content=react_agent_prompt)]
-            # Make the fallback call. The LiteLLM.chat method updates self.last_thought on success.
-            llm.chat(chat_messages)
+            # 1) redo the retrieval + answer_tool so it writes into llsc.query_artifacts
+            raw = answer_from_document_retrieval(
+                product=product,
+                original_query=nl_query,
+                generated_query=None,
+                conversation_history=conversation_history
+            )
+            # parse its JSON
+            result = json.loads(raw)
+            final_response = result["response"]
+            nodes = result["reranked_nodes"]
 
-            #Add llm.last_thought to final_response
-            final_response = llm.last_thought
+            if nodes:
+                if not hasattr(llsc, 'query_artifacts'):
+                    llsc.query_artifacts = {}
+                if query_id not in llsc.query_artifacts:
+                    llsc.query_artifacts[query_id] = {}
+                llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
+                llsc.save_context()
             
-            utils.logger.info("Returning last thought for session %s \n Query id: %s\n Response: %s", session_id, query_id,final_response)
+            utils.logger.info("Returning retrieval result for session %s \n Query id: %s\n Response: %s", session_id, query_id, final_response)
 
-            llsc.add_to_conversation_history("User", nl_query, query_id)
             llsc.add_to_conversation_history("Assistant", final_response, query_id)
-            #return json response with final_response and nodes
+            
             return {
                 "response": final_response,
                 "reranked_nodes": nodes,
@@ -892,75 +926,6 @@ async def update_golden_qa_pairs(product: str, encrypted_key: str, background_ta
     jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
     background_tasks.add_task(_run_update_golden_qa_pairs_task)
     return "Golden QA pair update initiated. Please wait for ~2 minutes before using Rocknbot"
-
-
-@app.post("/get_conversations/")
-async def get_conversations(product: str, endorsed_by: str, encrypted_key: str) -> StreamingResponse:
-    """
-    Retrieves conversations based on product and endorsement type.
-
-    Args:
-        product (str): Product name ("IDA" or "IDDM").
-        endorsed_by (str): "user" or "expert".
-        encrypted_key (str): JWT key for authentication.
-
-    Returns:
-        StreamingResponse: ZIP file of conversations, or None if none found.
-
-    Raises:
-        HTTPException: On authentication failure or internal errors.
-    """
-    try:
-        jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
-        session_ids = [
-            entry
-            for entry in os.listdir(LilLisaServerContext.SPEEDICT_FOLDERPATH)
-            if os.path.isdir(os.path.join(LilLisaServerContext.SPEEDICT_FOLDERPATH, entry))
-        ]
-        useful_conversations = []
-        product_enum = PRODUCT.get_product(product)
-
-        for session_id in session_ids:
-            llsc = get_llsc(session_id)
-            if product_enum == llsc.product:
-                endorsements = (
-                    llsc.user_endorsements
-                    if endorsed_by == "user"
-                    else llsc.expert_endorsements
-                    if endorsed_by == "expert"
-                    else None
-                )
-                if endorsements:
-                    useful_conversations.append(llsc.conversation_history)
-
-        if useful_conversations:
-            zip_stream = io.BytesIO()
-            with zipfile.ZipFile(zip_stream, "w") as zipf:
-                for i, conversation in enumerate(useful_conversations, start=1):
-                    # Format conversation history using list comprehension
-                    conversation_history_lines = [
-                        f"{poster}: {message} [Query ID: {query_id}]"
-                        for poster, message, query_id in conversation
-                    ]
-                    
-                    conversation_history = "\n".join(conversation_history_lines)
-                    zipf.writestr(f"conversation_{i}.md", conversation_history.encode("utf-8"))
-            zip_stream.seek(0)
-            return StreamingResponse(
-                zip_stream,
-                media_type="application/zip",
-                headers={"Content-Disposition": "attachment; filename=conversations.zip"},
-            )
-        return None
-    except jwt.exceptions.InvalidSignatureError as e:
-        raise HTTPException(
-            status_code=401,
-            detail="Failed signature verification. Unauthorized.",
-        ) from e
-    except Exception as exc:
-        utils.logger.critical("Internal error in get_conversations(): %s", exc)
-        raise HTTPException(status_code=500, detail="Internal error in get_conversations()") from exc
-
 
 async def _run_rebuild_docs_task():
     """Contains the core logic for rebuilding docs, run as a background task."""
