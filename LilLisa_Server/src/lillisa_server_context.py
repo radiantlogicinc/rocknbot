@@ -5,6 +5,8 @@ access review state
 import threading
 from enum import Enum
 from typing import List, Tuple  # , Union, Dict, Optional
+import datetime
+import json
 
 from speedict import Rdict  # pylint: disable=no-name-in-module
 
@@ -50,13 +52,11 @@ class LilLisaServerContext:  # pylint: disable=too-many-instance-attributes, too
         self.product = product
 
         self.session_id = session_id
-        self.conversation_history: List[Tuple[str, str]] = []
-        self.user_endorsements: List[int] = []
-        self.expert_endorsements: List[int] = []
-        # self.conversation_history: List[ChatMessage] = []
-
+        self.query_counter = 0
+        self.conversation_history: List[Tuple[str, str, str]] = []
+        self.query_artifacts: dict[str, dict] = {}
+        
         self.save_context()
-
     # def update_conversation_history(self, conversation_list: list[Tuple[str, str]]):
     #     """ update the stage and step """
     #     self.conversation_history.extend(conversation_list)
@@ -88,23 +88,74 @@ class LilLisaServerContext:  # pylint: disable=too-many-instance-attributes, too
     #     finally:
     #         keyvalue_db.close()
 
-    def add_to_conversation_history(self, poster: str, message: str):
-        """add to the conversation history"""
-        self.conversation_history.append((poster, message))
-        self.save_context()
+    def add_to_conversation_history(self, poster: str, message: str, query_id: str = None):
+        """
+        Add to the conversation history with a unique query_id.
 
-    def record_endorsement(self, is_expert: bool, thumbs_up: bool):
-        """Record the endorsement for the response in conversation history"""
-        index = len(self.conversation_history) - 1
-        if is_expert:
-            self.expert_endorsements.append(index)
+        Args:
+            poster (str): The poster of the message ("User", "Assistant", "Expert").
+            message (str): The message content.
+            query_id (str, optional): A specific query ID if provided (used for "Assistant" or "Expert").
+
+        Returns:
+            str: The query_id used or generated for this message.
+        """
+        with keyvalue_db_lock:
+            if poster == "User":
+                # Increment counter and generate a new query_id for user queries
+                self.query_counter += 1
+                query_id = f"{self.session_id}_{self.query_counter}"
+            elif not query_id:
+                # Look for most recent user's query_id
+                for p, _, qid in reversed(self.conversation_history):
+                    if p == "User":
+                        query_id = qid
+                        break
+                else:
+                    # Fallback for no prior user query (e.g., system-initiated messages)
+                    self.query_counter += 1
+                    query_id = f"{self.session_id}_System_{self.query_counter}"
+
+            # Append the message to history with the query_id
+            self.conversation_history.append((poster, message, query_id))
+            self.save_context()
+
+            # Log the assistant's response
+            if poster == "Assistant":
+                self.log_response(query_id, message)
+
+            return query_id
+
+    def log_response(self, query_id: str, response: str):
+        """
+        Logs the user query and assistant response for a given query_id.
+
+        Args:
+            query_id (str): The query ID associated with the response.
+            response (str): The assistant's response message.
+        """
+        # Find the user query with the same query_id
+        user_query = next(
+            (msg for p, msg, qid in self.conversation_history if p == "User" and qid == query_id),
+            None
+        )
+        if user_query:
+            # Prepare the log message with all required details
+            timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            log_message = {
+                "timestamp": timestamp,
+                "product": self.product.value,
+                "session_id": self.session_id,
+                "query_id": query_id,
+                "query": user_query,
+                "response": response,
+                "thumbs_up": None,
+                "feedback_src": None
+            }
+            utils.logger.info(f"Response: {json.dumps(log_message)}")
         else:
-            self.user_endorsements.append(index)
-        self.save_context()
+            utils.logger.warning(f"No user query found for query_id {query_id}")
 
-    # def update_conversation_history(self, conversation_history: List[ChatMessage]):
-    #     self.conversation_history = conversation_history
-    #     self.save_context()
 
     @staticmethod
     def get_db_folderpath(session_id: str) -> str:
