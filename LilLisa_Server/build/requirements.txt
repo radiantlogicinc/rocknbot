@@ -13,3 +13,4 @@ speedict==0.3.12
 tiktoken==0.7.0
 uvicorn==0.20.0
 litellm==1.63.14
+h11>=0.16.0 # not directly required, pinned by Snyk to avoid a vulnerability
