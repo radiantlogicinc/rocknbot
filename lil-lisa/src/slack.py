@@ -148,13 +148,9 @@ async def get_ans(query, thread_id, msg_id, product, is_expert_answering):
                 "is_followup": bool(thread_id),
 
             },
-            timeout=120,  # Increased timeout 90 to 120 seconds
-            # Critical 
+            timeout=90,  # Increased timeout to 90
         )    
-    except requests.exceptions.ReadTimeout as timeout_exc:
-        logger.error(f"Request timed out: {timeout_exc}")
-        return "The agent failed to generate an answer. Please try again in a new message thread. Frame clear queries using full sentence(s)"
-    except requests.exceptions.Timeout as timeout_exc:
+    except (requests.exceptions.ReadTimeout, requests.exceptions.Timeout) as timeout_exc:
         logger.error(f"Request timed out: {timeout_exc}")
         return "The agent failed to generate an answer. Please try again in a new message thread. Frame clear queries using full sentence(s)"
     except Exception as exc:  # pylint: disable=broad-except

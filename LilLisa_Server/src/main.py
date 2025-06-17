@@ -546,12 +546,10 @@ def invoke(
     """
     nodes = []
     try:
-        # utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
-        # llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
-
         utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s, Follow_up: %s", session_id, locale, product, nl_query, is_followup)
         if is_followup:
             db_folderpath = LilLisaServerContext.get_db_folderpath(session_id)
+            keyvalue_db = None
             try:
                 keyvalue_db = Rdict(db_folderpath)
                 if session_id not in keyvalue_db:
@@ -561,8 +559,9 @@ def invoke(
                         "query_id": None
                     }
             finally:
-                keyvalue_db.close()
-        # Now it's safe to load or create the session:
+                if keyvalue_db is not None:
+                    keyvalue_db.close()
+       
         # Load the existing context (or create if it were new, though above check treats missing as expired)
         llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
 
@@ -1217,18 +1216,15 @@ async def cleanup_sessions(encrypted_key: str) -> str:
         days_str = env.get("SESSION_LIFETIME_DAYS")
         if not days_str:
             utils.logger.critical("SESSION_LIFETIME_DAYS not found in lillisa_server.env")
-            raise Exception("SESSION_LIFETIME_DAYS not configured")
         try:
             session_days = float(days_str)
         except ValueError:
             utils.logger.critical("Invalid SESSION_LIFETIME_DAYS: %s", days_str)
-            raise Exception("Invalid SESSION_LIFETIME_DAYS value")
 
         # Get the Speedict sessions folder path
         speedict_folder = LilLisaServerContext.SPEEDICT_FOLDERPATH
         if not os.path.isdir(speedict_folder):
             utils.logger.critical("SPEEDICT_FOLDERPATH does not exist: %s", speedict_folder)
-            raise Exception("Invalid SPEEDICT_FOLDERPATH")
 
         # Compute age threshold
         now = datetime.datetime.now().timestamp()
@@ -1244,7 +1240,7 @@ async def cleanup_sessions(encrypted_key: str) -> str:
                 # Get folder modification time
                 modified_time = os.path.getmtime(folder_path)
             except Exception as e:
-                utils.logger.warning(f"Could not access folder {folder_path}: {e}")
+                utils.logger.error(f"Could not access folder {folder_path}: {e}")
                 continue
             # Delete if older than threshold
             if now - modified_time > threshold_seconds:
