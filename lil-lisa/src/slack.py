@@ -145,9 +145,18 @@ async def get_ans(query, thread_id, msg_id, product, is_expert_answering):
                 "product": product,
                 "nl_query": query,
                 "is_expert_answering": is_expert_answering,
+                "is_followup": bool(thread_id),
+
             },
-            timeout=90,  # Increased timeout to 90 seconds
-        )
+            timeout=120,  # Increased timeout 90 to 120 seconds
+            # Critical 
+        )    
+    except requests.exceptions.ReadTimeout as timeout_exc:
+        logger.error(f"Request timed out: {timeout_exc}")
+        return "The agent failed to generate an answer. Please try again in a new message thread. Frame clear queries using full sentence(s)"
+    except requests.exceptions.Timeout as timeout_exc:
+        logger.error(f"Request timed out: {timeout_exc}")
+        return "The agent failed to generate an answer. Please try again in a new message thread. Frame clear queries using full sentence(s)"
     except Exception as exc:  # pylint: disable=broad-except
         logger.error(f"An error occurred during the asynchronous call get_ans: {exc}")
         return f"Lil lisa Slack-An error occured: {exc}"
@@ -568,71 +577,6 @@ async def update_golden_qa_pairs(ack, body, say):    # pylint: disable=too-many-
         return "An error occured"
 
 
-@app.command("/get_conversations")
-async def get_conversations(ack, body, say):
-    """
-    Slack command to retrieve the conversations endorsed by a specific entity.
-
-    This asynchronous function is a Slack slash command handler for "/get_conversations". It sends progress and success messages in the Slack channel.
-
-    Args:
-        ack (function): A function used to acknowledge the Slack command.
-        body (dict): A dictionary containing the payload of the event, command, or action.
-        say (function): A function used to send messages in Slack.
-
-    """
-    await ack()
-    user_id = body.get("user_id")
-    channel_id = body.get("channel_id")
-    direct_message_convo = await app.client.conversations_open(users=user_id)
-    dm_channel_id = direct_message_convo.data["channel"]["id"]
-    endorsed_by = body.get("text").strip().lower()
-    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
-        ADMIN_CHANNEL_ID_IDA, user_id
-    )
-    if not contains_user:
-        # Return an error message or handle unauthorized users
-        await say(
-            text="""Unauthorized! Please contact one of the admins (@nico/@Dhar Rawal) and ask for authorization. Once you are added to the appropriate admin Slack channel, you will be able to use '/' commands to manage rocknbot.""",
-        )
-        return
-
-    product, _ = determine_product_and_expert(channel_id)
-
-    if product is None:
-        _ = await say(
-            channel=dm_channel_id,
-            text="I am unable to retrieve the golden QA pairs from this channel. Please go to the approriate channel and try the command again.",
-        )
-        return
-    try:
-        # Call the get_conversations API
-        full_url = f"{BASE_URL}/get_conversations/"
-        if response := requests.post(
-            full_url,
-            params={
-                "product": product,  # pylint: disable=missing-timeout
-                "endorsed_by": endorsed_by,
-                "encrypted_key": ENCRYPTED_AUTHENTICATION_KEY,
-            },
-            timeout=180,
-        ):
-            await app.client.files_upload_v2(
-                file=response.content,
-                filename="conversations.zip",
-                channel=dm_channel_id,
-                initial_comment=f"Here are the conversations you requested! (endoresed by {endorsed_by})",
-            )
-        else:
-            error_msg = f"Call to lil-lisa server {full_url} has failed."
-            logger.error(error_msg)
-            return error_msg
-
-    except Exception as exc:  # pylint: disable=broad-except
-        logger.error(f"An error occurred during the asynchronous call get_conversations(): {exc}")
-        return "An error occured"
-
-
 @app.command("/rebuild_docs")
 async def rebuild_docs(ack, body, say):
     """
@@ -692,6 +636,76 @@ async def rebuild_docs(ack, body, say):
         logger.error(f"An error occurred during the asynchronous call rebuild_docs(): {exc}")
         return "An error occured"
 
+
+@app.command("/cleanup_sessions")
+async def cleanup_sessions(ack, body, say):
+    """
+    Slack command to cleanup old sessions.
+    
+    This asynchronous function is a Slack slash command handler for "/cleanup_sessions".
+    It deletes session folders older than the configured SESSION_LIFETIME_DAYS.
+    
+    Args:
+        ack (function): A function used to acknowledge the Slack command.
+        body (dict): A dictionary containing the payload of the event, command, or action.
+        say (function): A function used to send messages in Slack.
+    """
+    await ack()
+    user_id = body.get("user_id")
+    
+    # Open a direct message conversation with the user
+    direct_message_convo = await app.client.conversations_open(users=user_id)
+    dm_channel_id = direct_message_convo.data["channel"]["id"]
+    
+    # Check if user is authorized (in admin channels)
+    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
+        ADMIN_CHANNEL_ID_IDA, user_id
+    )
+    if not contains_user:
+        # Return an error message for unauthorized users
+        await say(
+            text="""Unauthorized! Please contact one of the admins (@nico/@Dhar Rawal) and ask for authorization. Once you are added to the appropriate admin Slack channel, you will be able to use '/' commands to manage rocknbot.""",
+        )
+        return
+    
+    # Send initial message
+    initial_message = await app.client.chat_postMessage(
+        channel=dm_channel_id,
+        text="Session cleanup has started. This will remove old session data based on the configured retention period."
+    )
+    thread_ts = initial_message["ts"]
+    
+    try:
+        # Call the cleanup_sessions API
+        full_url = f"{BASE_URL}/cleanup_sessions/"
+        response = requests.post(
+            full_url,
+            params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
+            timeout=60,
+        )
+        
+        if response.status_code == 200:
+            # Send success message in the same thread
+            await app.client.chat_postMessage(
+                channel=dm_channel_id,
+                thread_ts=thread_ts,
+                text=response.text
+            )
+        else:
+            error_msg = f"Cleanup sessions failed with status code {response.status_code}: {response.text}"
+            logger.error(error_msg)
+            await app.client.chat_postMessage(
+                channel=dm_channel_id,
+                thread_ts=thread_ts,
+                text=f"Error: {error_msg}"
+            )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error(f"An error occurred during cleanup_sessions: {exc}")
+        await app.client.chat_postMessage(
+            channel=dm_channel_id,
+            thread_ts=thread_ts,
+            text=f"An error occurred: {str(exc)}"
+        )
 
 async def start_slackapp():
     """
