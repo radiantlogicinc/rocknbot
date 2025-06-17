@@ -81,6 +81,7 @@ DOCUMENTATION_IA_PRODUCT_VERSIONS = None  # List of IA product documentation ver
 DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None  # List of IA self-managed documentation versions
 MAX_ITERATIONS = None  # Maximum number of iterations for the ReAct agent
 LLM_MODEL = None  # Model name
+SESSION_LIFETIME_DAYS = None  # Session lifetime in days
 
 
 # -----------------------------------------------------------------------------
@@ -220,6 +221,14 @@ async def lifespan(_app: FastAPI):
     else:
         utils.logger.critical("MAX_ITERATIONS not found in lillisa_server.env")
         raise ValueError("MAX_ITERATIONS not found in lillisa_server.env")
+    
+    # Load session lifetime
+    if days_str := lillisa_server_env.get("SESSION_LIFETIME_DAYS"):
+        globals()["SESSION_LIFETIME_DAYS"] = float(days_str)
+    else:
+        utils.logger.critical("SESSION_LIFETIME_DAYS not found in lillisa_server.env")
+        raise ValueError("SESSION_LIFETIME_DAYS not found in lillisa_server.env")
+
     # Load model name
     if model := lillisa_server_env.get("LLM_MODEL"):
         globals()["LLM_MODEL"] = str(model)
@@ -1211,16 +1220,7 @@ async def cleanup_sessions(encrypted_key: str) -> str:
         # Verify JWT signature
         jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms=["HS256"])
         
-        # Load session lifetime (days) from environment
-        env = utils.LILLISA_SERVER_ENV_DICT
-        days_str = env.get("SESSION_LIFETIME_DAYS")
-        if not days_str:
-            utils.logger.critical("SESSION_LIFETIME_DAYS not found in lillisa_server.env")
-        try:
-            session_days = float(days_str)
-        except ValueError:
-            utils.logger.critical("Invalid SESSION_LIFETIME_DAYS: %s", days_str)
-
+        session_days = SESSION_LIFETIME_DAYS
         # Get the Speedict sessions folder path
         speedict_folder = LilLisaServerContext.SPEEDICT_FOLDERPATH
         if not os.path.isdir(speedict_folder):
