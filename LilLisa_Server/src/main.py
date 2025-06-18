@@ -81,6 +81,7 @@ DOCUMENTATION_IA_PRODUCT_VERSIONS = None  # List of IA product documentation ver
 DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None  # List of IA self-managed documentation versions
 MAX_ITERATIONS = None  # Maximum number of iterations for the ReAct agent
 LLM_MODEL = None  # Model name
+SESSION_LIFETIME_DAYS = None  # Session lifetime in days
 
 
 # -----------------------------------------------------------------------------
@@ -220,6 +221,14 @@ async def lifespan(_app: FastAPI):
     else:
         utils.logger.critical("MAX_ITERATIONS not found in lillisa_server.env")
         raise ValueError("MAX_ITERATIONS not found in lillisa_server.env")
+    
+    # Load session lifetime
+    if days_str := lillisa_server_env.get("SESSION_LIFETIME_DAYS"):
+        globals()["SESSION_LIFETIME_DAYS"] = float(days_str)
+    else:
+        utils.logger.critical("SESSION_LIFETIME_DAYS not found in lillisa_server.env")
+        raise ValueError("SESSION_LIFETIME_DAYS not found in lillisa_server.env")
+
     # Load model name
     if model := lillisa_server_env.get("LLM_MODEL"):
         globals()["LLM_MODEL"] = str(model)
@@ -525,7 +534,8 @@ def invoke(
     locale: str,
     product: str,
     nl_query: str,
-    is_expert_answering: bool
+    is_expert_answering: bool,
+    is_followup : bool = False
 ):
     """
     Processes a natural language query or expert answer and returns a JSON response for Slack.
@@ -545,7 +555,23 @@ def invoke(
     """
     nodes = []
     try:
-        utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
+        utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s, Follow_up: %s", session_id, locale, product, nl_query, is_followup)
+        if is_followup:
+            db_folderpath = LilLisaServerContext.get_db_folderpath(session_id)
+            keyvalue_db = None
+            try:
+                keyvalue_db = Rdict(db_folderpath)
+                if session_id not in keyvalue_db:
+                    return {
+                        "response": "This session is expired, start a new conversation.",
+                        "reranked_nodes": [],
+                        "query_id": None
+                    }
+            finally:
+                if keyvalue_db is not None:
+                    keyvalue_db.close()
+       
+        # Load the existing context (or create if it were new, though above check treats missing as expired)
         llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
 
         # Add user query and get the generated query_id
@@ -1185,6 +1211,54 @@ async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) ->
     background_tasks.add_task(_run_rebuild_docs_task)
     return "Documentation rebuild initiated. Changes will become effective in ~1 hour. Until then, Rocknbot will continue to answer questions using current docs"
 
+@app.post("/cleanup_sessions/", response_model=str, response_class=PlainTextResponse)
+async def cleanup_sessions(encrypted_key: str) -> str:
+    """
+    Deletes session folders under SPEEDICT_FOLDERPATH older than SESSION_LIFETIME_DAYS.
+    """
+    try:
+        # Verify JWT signature
+        jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms=["HS256"])
+        
+        session_days = SESSION_LIFETIME_DAYS
+        # Get the Speedict sessions folder path
+        speedict_folder = LilLisaServerContext.SPEEDICT_FOLDERPATH
+        if not os.path.isdir(speedict_folder):
+            utils.logger.critical("SPEEDICT_FOLDERPATH does not exist: %s", speedict_folder)
+
+        # Compute age threshold
+        now = datetime.datetime.now().timestamp()
+        threshold_seconds = session_days * 86400 # Convert days to seconds
+
+        # Delete old session folders
+        deleted_count = 0
+        for name in os.listdir(speedict_folder):
+            folder_path = os.path.join(speedict_folder, name)
+            if not os.path.isdir(folder_path):
+                continue
+            try:
+                # Get folder modification time
+                modified_time = os.path.getmtime(folder_path)
+            except Exception as e:
+                utils.logger.error(f"Could not access folder {folder_path}: {e}")
+                continue
+            # Delete if older than threshold
+            if now - modified_time > threshold_seconds:
+                try:
+                    shutil.rmtree(folder_path)
+                except Exception as e:
+                    utils.logger.warning(f"Failed to delete {folder_path}: {e}")
+                else:
+                    deleted_count += 1
+        
+        utils.logger.info(f"Deleted {deleted_count} sessions older than {session_days} days")
+        return f"Deleted {deleted_count} sessions older than {session_days} days"
+
+    except jwt.exceptions.InvalidSignatureError as e:
+        raise HTTPException(status_code=401, detail="Failed signature verification. Unauthorized.") from e
+    except Exception as exc:
+        utils.logger.critical(f"Internal error in cleanup_sessions(): {exc}")
+        raise HTTPException(status_code=500, detail="Internal error in cleanup_sessions()") from exc
 
 @app.get("/", response_class=HTMLResponse)
 def home():
