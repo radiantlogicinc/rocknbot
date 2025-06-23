@@ -385,19 +385,38 @@ def answer_from_document_retrieval(
         elif 0.7 <= node.score < 0.85:
             potentially_relevant_qa_nodes.append(node)
 
-    if relevant_qa_nodes:
-        response += "Here are some relevant QA pairs that have been verified by an expert!\n"
-        for idx, node in enumerate(relevant_qa_nodes, start=1):
-            response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
-        response += "\n\nAfter searching through the documentation database, this was found:\n"
+    # if relevant_qa_nodes:
+    #     response += "Here are some relevant QA pairs that have been verified by an expert!\n"
+    #     for idx, node in enumerate(relevant_qa_nodes, start=1):
+    #         response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
+    #     response += "\n\nAfter searching through the documentation database, this was found:\n"
 
     try:
         nodes = document_retriever.retrieve(query)
     except Warning:
         return "No relevant documents were found for this query."
-    reranked_nodes = RERANKER.postprocess_nodes(nodes=nodes, query_str=query)[:10]
-    useful_links = list(dict.fromkeys([node.metadata["github_url"] for node in reranked_nodes]))[:3]
-    raw_chunks = "\n\n".join(f"{node.text}" for node in reranked_nodes)
+    
+    combined_nodes = nodes + relevant_qa_nodes
+    reranked_nodes = RERANKER.postprocess_nodes(nodes=combined_nodes, query_str=query)[:10]
+    # Safely extract github_urls only from nodes that have them
+    useful_links = []
+    for node in reranked_nodes:
+        if url := node.metadata.get("github_url"):  # Only add URLs if they exist
+            useful_links.append(url)
+    useful_links = list(dict.fromkeys(useful_links))[:3]  # Take top 3 github_url
+
+    chunks = []
+    for node in reranked_nodes:
+        # Check if this is a QA node
+        if 'answer' in node.metadata:
+            # Format as a QA pair with clear prefix
+            answer = node.metadata.get('answer', 'No answer found')
+            chunks.append(f"EXPERT VERIFIED ANSWER: {answer}")
+        else:
+            # Regular document node
+            chunks.append(node.text)
+    
+    raw_chunks = "\n\n".join(chunks)
     formatted_chunks = format_tables_in_chunks(raw_chunks)
 
     user_prompt = QA_USER_PROMPT.replace("<CONTEXT>", formatted_chunks)
@@ -433,7 +452,18 @@ def answer_from_document_retrieval(
         for idx, node in enumerate(potentially_relevant_qa_nodes, start=1):
             response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
 
-    nodes_info = [{"text": node.text, "metadata": node.metadata} for node in reranked_nodes]
+    nodes_info = []
+    for node in reranked_nodes:
+        if 'answer' in node.metadata:
+            # For QA nodes, include both question and answer in the text field
+            nodes_info.append({
+                "text": f"EXPERT VERIFIED QA PAIR:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}",
+                "metadata": node.metadata
+            })
+        else:
+            # Regular document node
+            nodes_info.append({"text": node.text, "metadata": node.metadata})
+    
     response_dict = {"response": response, "reranked_nodes": nodes_info}
     return json.dumps(response_dict)
 
