@@ -636,17 +636,18 @@ def invoke(
     nodes = []
     try:
         utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s, Follow_up: %s", session_id, locale, product, nl_query, is_followup)
+        custom_headers = {"rli-product":product,"rli-locale": locale}
         if is_followup:
             db_folderpath = LilLisaServerContext.get_db_folderpath(session_id)
             keyvalue_db = None
             try:
                 keyvalue_db = Rdict(db_folderpath)
                 if session_id not in keyvalue_db:
-                    return {
+                    return JSONResponse(content={
                         "response": "This session is expired, start a new conversation.",
                         "reranked_nodes": [],
                         "query_id": None
-                    }
+                    },headers=custom_headers)
             finally:
                 if keyvalue_db is not None:
                     keyvalue_db.close()
@@ -660,11 +661,11 @@ def invoke(
         # Handle expert answering case
         if is_expert_answering:
             llsc.add_to_conversation_history("Expert", nl_query, query_id)
-            return {
+            return JSONResponse(content={
                 "response": nl_query,
                 "reranked_nodes": [],
                 "query_id": query_id
-            }
+            },headers=custom_headers)
 
         # Prepare agent with tools
         conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
@@ -712,11 +713,11 @@ def invoke(
             llsc.save_context()
 
         # Return JSON response
-        return {
+        return JSONResponse(content={
             "response": response_text,
             "reranked_nodes": nodes,
             "query_id": query_id
-        }
+        },headers=custom_headers)
 
     except HTTPException as exc:
         raise exc
