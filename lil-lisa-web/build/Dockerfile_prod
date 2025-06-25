@@ -1,0 +1,37 @@
+FROM continuumio/miniconda3:latest AS builder
+
+# Update conda
+RUN conda update conda && conda update --all
+
+# Set the working directory
+WORKDIR /app
+
+# Copy the new environment file from the build directory into /app
+# (The build context is the project root, so "build/environment.yml" is the correct path.)
+COPY build/environment.yml /app/
+
+# Create the conda environment using the new environment file (which now includes gunicorn)
+RUN conda env create -f environment.yml
+
+# Copy application code, templates and environment variable file from the root directory
+COPY main.py /app/
+COPY templates/ /app/templates/
+RUN touch /app/lil-lisa-web.env
+
+# Ensure logs are unbuffered (important for production logging)
+ENV PYTHONUNBUFFERED=1
+
+# Expose the port so cloud platforms can route traffic
+EXPOSE 8080
+
+# Use gunicorn as the production server.
+# "main:app" tells gunicorn to import the Flask app object (named "app") from main.py.
+ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa-web", "gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "120", "main:app"]
+
+FROM chainguard/wolfi-base:latest
+COPY --from=builder /opt/conda/envs/lil-lisa-web /usr/local/env
+COPY --from=builder /app /app
+ENV PATH="/usr/local/env/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+ENTRYPOINT ["python","-m","gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "120", "main:app"]
