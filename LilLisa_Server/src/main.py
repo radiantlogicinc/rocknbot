@@ -343,7 +343,6 @@ set_meter_provider(meter_provider)
 meter = meter_provider.get_meter(__name__)
 metrics_fastapi_requests_total = meter.create_counter("fastapi_requests_total")
 metrics_fastapi_responses_total = meter.create_counter("fastapi_responses_total")
-metrics_fastapi_exceptions_total = meter.create_counter("fastapi_exceptions_total")
 metrics_fastapi_requests_duration_seconds = meter.create_histogram("fastapi_requests_duration_seconds")
 metrics_fastapi_requests_in_progress = meter.create_up_down_counter("fastapi_requests_in_progress")
 
