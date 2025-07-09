@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import html
 import json
 import datetime
@@ -19,7 +20,7 @@ import jwt
 import litellm
 import tiktoken
 import uvicorn
-from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Body
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Request, Response, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
@@ -65,7 +66,12 @@ from src.lillisa_server_context import LOCALE, LilLisaServerContext
 from src.llama_index_lancedb_vector_store import LanceDBVectorStore
 from src.llama_index_markdown_reader import MarkdownReader
 
+from src import observability
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+
 logging.getLogger("LiteLLM").setLevel(logging.INFO)
+logging.getLogger("LiteLLM").handlers.clear()
 
 # Global configuration variables
 REACT_AGENT_PROMPT = None  # Path to the React agent prompt file
@@ -298,7 +304,15 @@ async def init_lance_databases():
         utils.logger.critical("Golden QA pairs rebuild failed during startup: %s", rebuild_exc, exc_info=True)
         raise RuntimeError("Golden QA pairs rebuild failed during startup.") from rebuild_exc
 
+# Initialize FastAPI app
 app = FastAPI(lifespan=lifespan)
+
+# Instrument FastAPI with OpenTelemetry
+FastAPIInstrumentor.instrument_app(
+    app,
+    excluded_urls="^/docs$",
+    http_capture_headers_server_response=["rli-product","rli-locale"]
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -309,6 +323,27 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+@app.middleware("http")
+async def custom_metrics(request: Request, call_next):
+    if request.url.path =="/docs":
+        return await call_next(request)
+    attributes = {"path":request.url.path,"method":request.method}
+    if request.query_params.get("product"):
+        attributes["product"]=request.query_params.get("product")
+    if request.query_params.get("locale"):
+        attributes["locale"]=request.query_params.get("locale")
+    observability.metrics_fastapi_requests_total.add(1,attributes)
+    observability.metrics_fastapi_requests_in_progress.add(1,attributes)
+    start_time = time.time()
+    try:
+        response = await call_next(request)
+        attributes["status_code"] = str(response.status_code)
+        observability.metrics_fastapi_responses_total.add(1,attributes)
+        return response
+    finally:
+        duration = time.time() - start_time
+        observability.metrics_fastapi_requests_duration_seconds.record(duration,attributes)
+        observability.metrics_fastapi_requests_in_progress.add(-1,attributes)
 
 # -----------------------------------------------------------------------------
 # Utility Functions
@@ -371,6 +406,8 @@ async def invoke_stream_with_nodes(
     Raises:
         HTTPException: On internal errors or invalid input.
     """
+    utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
+    custom_headers = {"rli-product":product,"rli-locale": locale}
     llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
 
     query_id = llsc.add_to_conversation_history("User", nl_query)
@@ -382,7 +419,7 @@ async def invoke_stream_with_nodes(
             yield f"QUERY_ID: {query_id}\n"
             for chunk in chunks:
                 yield f"ANS: {chunk}\n"
-        return StreamingResponse(expert_gen(), media_type="text/html")
+        return StreamingResponse(expert_gen(), media_type="text/html",headers=custom_headers)
 
     # Build agent with tools including answer_from_document_retrieval
     conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
@@ -526,7 +563,7 @@ async def invoke_stream_with_nodes(
 
                 llsc.add_to_conversation_history("Assistant", final_response, query_id)
 
-    return StreamingResponse(streamer(), media_type="text/html")
+    return StreamingResponse(streamer(), media_type="text/html",headers=custom_headers)
 
 @app.post("/invoke/", response_model=dict, response_class=JSONResponse)
 def invoke(
@@ -556,17 +593,18 @@ def invoke(
     nodes = []
     try:
         utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s, Follow_up: %s", session_id, locale, product, nl_query, is_followup)
+        custom_headers = {"rli-product":product,"rli-locale": locale}
         if is_followup:
             db_folderpath = LilLisaServerContext.get_db_folderpath(session_id)
             keyvalue_db = None
             try:
                 keyvalue_db = Rdict(db_folderpath)
                 if session_id not in keyvalue_db:
-                    return {
+                    return JSONResponse(content={
                         "response": "This session is expired, start a new conversation.",
                         "reranked_nodes": [],
                         "query_id": None
-                    }
+                    },headers=custom_headers)
             finally:
                 if keyvalue_db is not None:
                     keyvalue_db.close()
@@ -580,11 +618,11 @@ def invoke(
         # Handle expert answering case
         if is_expert_answering:
             llsc.add_to_conversation_history("Expert", nl_query, query_id)
-            return {
+            return JSONResponse(content={
                 "response": nl_query,
                 "reranked_nodes": [],
                 "query_id": query_id
-            }
+            },headers=custom_headers)
 
         # Prepare agent with tools
         conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
@@ -632,11 +670,11 @@ def invoke(
             llsc.save_context()
 
         # Return JSON response
-        return {
+        return JSONResponse(content={
             "response": response_text,
             "reranked_nodes": nodes,
             "query_id": query_id
-        }
+        },headers=custom_headers)
 
     except HTTPException as exc:
         raise exc
