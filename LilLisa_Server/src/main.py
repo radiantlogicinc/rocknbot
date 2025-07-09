@@ -66,21 +66,7 @@ from src.lillisa_server_context import LOCALE, LilLisaServerContext
 from src.llama_index_lancedb_vector_store import LanceDBVectorStore
 from src.llama_index_markdown_reader import MarkdownReader
 
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-
-from opentelemetry._logs import set_logger_provider
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
-
-from opentelemetry.metrics import set_meter_provider
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
-
+from src import observability
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 
@@ -318,34 +304,6 @@ async def init_lance_databases():
         utils.logger.critical("Golden QA pairs rebuild failed during startup: %s", rebuild_exc, exc_info=True)
         raise RuntimeError("Golden QA pairs rebuild failed during startup.") from rebuild_exc
 
-# Initialize OpenTelemetry
-# Traces
-trace.set_tracer_provider(TracerProvider())
-otlp_exporter = OTLPSpanExporter()
-span_processor = BatchSpanProcessor(otlp_exporter)
-trace.get_tracer_provider().add_span_processor(span_processor)
-
-#Logs
-logger_provider = LoggerProvider()
-set_logger_provider(logger_provider)
-logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
-handler = LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
-# Attach OTLP handler to root logger
-logging.getLogger().addHandler(handler)
-
-# Metrics
-metrics_exporter = OTLPMetricExporter()
-reader = PeriodicExportingMetricReader(metrics_exporter)
-meter_provider = MeterProvider(metric_readers=[reader])
-set_meter_provider(meter_provider)
-
-# Custom metrics
-meter = meter_provider.get_meter(__name__)
-metrics_fastapi_requests_total = meter.create_counter("fastapi_requests_total")
-metrics_fastapi_responses_total = meter.create_counter("fastapi_responses_total")
-metrics_fastapi_requests_duration_seconds = meter.create_histogram("fastapi_requests_duration_seconds")
-metrics_fastapi_requests_in_progress = meter.create_up_down_counter("fastapi_requests_in_progress")
-
 # Initialize FastAPI app
 app = FastAPI(lifespan=lifespan)
 
@@ -374,18 +332,18 @@ async def custom_metrics(request: Request, call_next):
         attributes["product"]=request.query_params.get("product")
     if request.query_params.get("locale"):
         attributes["locale"]=request.query_params.get("locale")
-    metrics_fastapi_requests_total.add(1,attributes)
-    metrics_fastapi_requests_in_progress.add(1,attributes)
+    observability.metrics_fastapi_requests_total.add(1,attributes)
+    observability.metrics_fastapi_requests_in_progress.add(1,attributes)
     start_time = time.time()
     try:
         response = await call_next(request)
         attributes["status_code"] = str(response.status_code)
-        metrics_fastapi_responses_total.add(1,attributes)
+        observability.metrics_fastapi_responses_total.add(1,attributes)
         return response
     finally:
         duration = time.time() - start_time
-        metrics_fastapi_requests_duration_seconds.record(duration,attributes)
-        metrics_fastapi_requests_in_progress.add(-1,attributes)
+        observability.metrics_fastapi_requests_duration_seconds.record(duration,attributes)
+        observability.metrics_fastapi_requests_in_progress.add(-1,attributes)
 
 # -----------------------------------------------------------------------------
 # Utility Functions
