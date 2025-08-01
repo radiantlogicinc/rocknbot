@@ -11,6 +11,8 @@ WORKDIR /app
 COPY build/environment.yml /app/
 
 # Create the conda environment using the new environment file (which now includes gunicorn)
+RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
 RUN conda env create -f environment.yml
 
 # Copy application code, templates and environment variable file from the root directory
