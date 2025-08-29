@@ -27,3 +27,4 @@ dependencies:
     - opentelemetry-sdk==1.33.0
     - opentelemetry-instrumentation-fastapi==0.54b0
     - opentelemetry-exporter-otlp==1.33.0
+    - voyageai==0.3.4
