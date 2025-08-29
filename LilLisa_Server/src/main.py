@@ -57,7 +57,7 @@ from pydantic import Extra
 from speedict import Rdict
 
 import lancedb
-
+import pyarrow as pa
 from src import utils
 from src.agent_and_tools import (
     IDA_PRODUCT_VERSIONS,
@@ -137,9 +137,94 @@ def configure_embedding_model(chunking_strategy: ChunkingStrategy):
         raise ValueError(f"Invalid chunking strategy: {chunking_strategy}. Must be TRADITIONAL or CONTEXTUAL")
 
 
-def refresh_embedding_model():
-    """Refresh the embedding model based on the current CURRENT_CHUNKING_STRATEGY."""
-    configure_embedding_model(CURRENT_CHUNKING_STRATEGY)
+def validate_embedding_compatibility():
+    """
+    Validate that the current embedding model is compatible with existing LanceDB tables.
+    If not compatible, attempt to auto-correct the chunking strategy.
+    """
+    try:
+        if not os.path.exists(LANCEDB_FOLDERPATH):
+            return  # No existing database to validate against
+            
+        detected_strategy = detect_lancedb_chunking_strategy(LANCEDB_FOLDERPATH)
+        if detected_strategy and detected_strategy != CURRENT_CHUNKING_STRATEGY:
+            utils.logger.warning(
+                f"Embedding model mismatch detected! Current: {CURRENT_CHUNKING_STRATEGY.value}, "
+                f"LanceDB: {detected_strategy.value}. Auto-correcting to match LanceDB."
+            )
+            set_chunking_strategy(detected_strategy)
+            # Recreate retrievers with the correct embedding model
+            create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+            
+    except Exception as e:
+        utils.logger.error(f"Error validating embedding compatibility: {e}")
+
+def detect_lancedb_chunking_strategy(lancedb_folderpath: str) -> Optional[ChunkingStrategy]:
+    """
+    Detect the chunking strategy used in existing LanceDB by examining embedding dimensions.
+    
+    Args:
+        lancedb_folderpath: Path to the LanceDB folder
+        
+    Returns:
+        ChunkingStrategy if detected, None if no tables exist or cannot be determined
+    """
+    try:
+        db = lancedb.connect(lancedb_folderpath)
+        table_names = db.table_names()
+        
+        # Check if any main product tables exist
+        for table_name in ["IDA", "IDDM", "IDA_QA_PAIRS", "IDDM_QA_PAIRS"]:
+            if table_name in table_names:
+                try:
+                    table = db.open_table(table_name)
+                    # Get schema and check vector column dimension
+                    schema = table.schema
+                    vector_column = None
+                    
+                    # Find the vector column (typically named 'vector')
+                    for field in schema:
+                        if field.name == "vector" and hasattr(field.type, "value_type"):
+                            vector_column = field
+                            break
+                    
+                    if vector_column and hasattr(vector_column.type, "value_type"):
+                        # For fixed size list, get the list size (dimension)
+                        if hasattr(vector_column.type, "list_size"):
+                            dimension = vector_column.type.list_size
+                        else:
+                            # Fallback: try to get a sample row to determine dimension
+                            sample = table.head(1).to_pandas()
+                            if not sample.empty and "vector" in sample.columns:
+                                vector_data = sample["vector"].iloc[0]
+                                if hasattr(vector_data, "__len__"):
+                                    dimension = len(vector_data)
+                                else:
+                                    continue
+                            else:
+                                continue
+                        
+                        utils.logger.info(f"Detected embedding dimension {dimension} in table {table_name}")
+                        
+                        # Map dimensions to chunking strategies
+                        if dimension == 3072:  # OpenAI text-embedding-3-large
+                            return ChunkingStrategy.TRADITIONAL
+                        elif dimension == 2048:  # Voyage voyage-context-3 (configured dimension)
+                            return ChunkingStrategy.CONTEXTUAL
+                        else:
+                            utils.logger.warning(f"Unknown embedding dimension {dimension} in table {table_name}")
+                            continue
+                
+                except Exception as e:
+                    utils.logger.warning(f"Could not examine table {table_name}: {e}")
+                    continue
+        
+        utils.logger.info("No existing tables found or unable to detect embedding dimensions")
+        return None
+        
+    except Exception as e:
+        utils.logger.warning(f"Error detecting LanceDB chunking strategy: {e}")
+        return None
 
 def set_chunking_strategy(strategy: ChunkingStrategy):
     """Set the current chunking strategy and update the embedding model."""
@@ -431,15 +516,24 @@ async def lifespan(_app: FastAPI):
         utils.logger.critical("VOYAGE_API_KEY_FILEPATH not found in lillisa_server.env")
         raise ValueError("VOYAGE_API_KEY_FILEPATH not found in lillisa_server.env")
 
-    # Configure embedding model with traditional chunking (default startup strategy)
-    configure_embedding_model(ChunkingStrategy.TRADITIONAL)
+    # Detect and configure appropriate chunking strategy based on existing LanceDB
+    detected_strategy = None
+    if os.path.exists(LANCEDB_FOLDERPATH):
+        detected_strategy = detect_lancedb_chunking_strategy(LANCEDB_FOLDERPATH)
+    
+    if detected_strategy:
+        utils.logger.info(f"Detected existing LanceDB with {detected_strategy.value} chunking strategy")
+        set_chunking_strategy(detected_strategy)
+    else:
+        utils.logger.info("No existing LanceDB detected or unable to determine chunking strategy, using traditional chunking as default")
+        configure_embedding_model(ChunkingStrategy.TRADITIONAL)
 
     # Validate LanceDB folder path
     if not os.path.exists(LANCEDB_FOLDERPATH):
         await init_lance_databases()
     else:
         create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
-
+    
     yield
     os.unsetenv("OPENAI_API_KEY")
     os.unsetenv("VOYAGE_API_KEY")
@@ -568,8 +662,8 @@ async def invoke_stream_with_nodes(
     """
     utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s", session_id, locale, product, nl_query)
     
-    # Refresh embedding model to ensure we're using the correct one for retrieval
-    refresh_embedding_model()
+    # Validate and auto-correct embedding model compatibility
+    validate_embedding_compatibility()
     
     custom_headers = {"rli-product":product,"rli-locale": locale}
     llsc = get_llsc(session_id, LOCALE.get_locale(locale), PRODUCT.get_product(product))
@@ -758,8 +852,8 @@ def invoke(
     try:
         utils.logger.info("session_id: %s, locale: %s, product: %s, nl_query: %s, Follow_up: %s", session_id, locale, product, nl_query, is_followup)
         
-        # Refresh embedding model to ensure we're using the correct one for retrieval
-        refresh_embedding_model()
+        # Validate and auto-correct embedding model compatibility
+        validate_embedding_compatibility()
         
         custom_headers = {"rli-product":product,"rli-locale": locale}
         if is_followup:
@@ -1786,12 +1880,12 @@ async def _run_complete_rebuild_traditional():
     """Rebuilds both documents and QA pairs with traditional chunking strategy."""
     utils.logger.info("Starting complete rebuild with traditional chunking (documents + QA pairs)")
     try:
-        # Set chunking strategy to traditional
-        set_chunking_strategy(ChunkingStrategy.TRADITIONAL)
         # Rebuild documents with traditional chunking
         await _run_rebuild_docs_task_traditional()
         # Rebuild QA pairs with traditional embedding model
         await _run_update_golden_qa_pairs_task()
+        # Set chunking strategy to traditional
+        set_chunking_strategy(ChunkingStrategy.TRADITIONAL)
         utils.logger.info("Complete traditional rebuild finished successfully")
     except Exception as e:
         utils.logger.error(f"Complete traditional rebuild failed: {e}", exc_info=True)
@@ -1801,12 +1895,12 @@ async def _run_complete_rebuild_contextual():
     """Rebuilds both documents and QA pairs with contextual chunking strategy."""
     utils.logger.info("Starting complete rebuild with contextual chunking (documents + QA pairs)")
     try:
-        # Set chunking strategy to contextual
-        set_chunking_strategy(ChunkingStrategy.CONTEXTUAL)
         # Rebuild documents with contextual chunking
         await _run_rebuild_docs_task_contextual()
         # Rebuild QA pairs with contextual embedding model
         await _run_update_golden_qa_pairs_task()
+        # Set chunking strategy to contextual
+        set_chunking_strategy(ChunkingStrategy.CONTEXTUAL)
         utils.logger.info("Complete contextual rebuild finished successfully")
     except Exception as e:
         utils.logger.error(f"Complete contextual rebuild failed: {e}", exc_info=True)
@@ -1842,8 +1936,6 @@ async def rebuild_docs_traditional(encrypted_key: str, background_tasks: Backgro
         str: Immediate confirmation message.
     """
     jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
-    # Immediately switch to traditional chunking strategy for query embeddings
-    set_chunking_strategy(ChunkingStrategy.TRADITIONAL)
     background_tasks.add_task(_run_complete_rebuild_traditional)
     return "Complete traditional rebuild initiated (OpenAI text-embedding-3-large). Rebuilding documents and QA pairs. Changes will become effective in ~1 hour. Query embedding model switched to OpenAI text-embedding-3-large."
 
@@ -1859,9 +1951,7 @@ async def rebuild_docs_contextual(encrypted_key: str, background_tasks: Backgrou
     Returns:
         str: Immediate confirmation message.
     """
-    jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
-    # Immediately switch to contextual chunking strategy for query embeddings
-    set_chunking_strategy(ChunkingStrategy.CONTEXTUAL)
+    jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")    
     background_tasks.add_task(_run_complete_rebuild_contextual)
     return "Complete contextual rebuild initiated (Voyage voyage-context-3). Rebuilding documents and QA pairs. Changes will become effective in ~1 hour. Query embedding model switched to Voyage voyage-context-3."
 
