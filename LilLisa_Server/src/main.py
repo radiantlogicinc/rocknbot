@@ -13,6 +13,7 @@ import tempfile
 import zipfile
 import pathlib
 from contextlib import asynccontextmanager
+from enum import Enum
 from typing import Any, AsyncGenerator, Generator, Optional, Sequence, List
 
 import git
@@ -38,6 +39,12 @@ from llama_index.core import (
     StorageContext,
     VectorStoreIndex,
 )
+
+os.environ["OTEL_SDK_DISABLED"] = "true"
+os.environ["OTEL_TRACES_EXPORTER"] = "none"
+os.environ["OTEL_METRICS_EXPORTER"] = "none"
+os.environ["OTEL_LOGS_EXPORTER"] = "none"
+
 from llama_index.core.agent import ReActAgent
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.llms import LLM, ChatMessage, ChatResponse, LLMMetadata
@@ -75,6 +82,14 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 logging.getLogger("LiteLLM").setLevel(logging.INFO)
 logging.getLogger("LiteLLM").handlers.clear()
 
+# -----------------------------------------------------------------------------
+# Chunking Strategy Enum
+# -----------------------------------------------------------------------------
+class ChunkingStrategy(Enum):
+    """Enum for different chunking strategies."""
+    TRADITIONAL = "traditional"
+    CONTEXTUAL = "contextual"
+
 # Global configuration variables
 REACT_AGENT_PROMPT = None  # Path to the React agent prompt file
 LANCEDB_FOLDERPATH = None  # Path to the LanceDB folder
@@ -90,7 +105,7 @@ DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None  # List of IA self-managed document
 MAX_ITERATIONS = None  # Maximum number of iterations for the ReAct agent
 LLM_MODEL = None  # Model name
 SESSION_LIFETIME_DAYS = None  # Session lifetime in days
-CHUNKING_STRATEGY = None  # Chunking strategy: 1 = Traditional OpenAI, 2 = Voyage contextual
+CURRENT_CHUNKING_STRATEGY = ChunkingStrategy.TRADITIONAL  # Current active chunking strategy
 
 # Voyage AI configuration
 VOYAGE_EMBEDDING_DIMENSION = 2048  # Embedding dimension for Voyage AI model
@@ -99,9 +114,9 @@ VOYAGE_EMBEDDING_DIMENSION = 2048  # Embedding dimension for Voyage AI model
 # -----------------------------------------------------------------------------
 # Embedding Configuration Functions
 # -----------------------------------------------------------------------------
-def configure_embedding_model(chunking_strategy: int):
+def configure_embedding_model(chunking_strategy: ChunkingStrategy):
     """Configure the embedding model based on the chunking strategy."""
-    if chunking_strategy == 1:
+    if chunking_strategy == ChunkingStrategy.TRADITIONAL:
         # Traditional OpenAI chunking
         Settings.embed_model = OpenAIEmbedding(
             model="text-embedding-3-large",
@@ -111,7 +126,7 @@ def configure_embedding_model(chunking_strategy: int):
             embed_batch_size=4  # Default is 10, reducing to spread out API calls
         )
         utils.logger.info("Configured OpenAI text-embedding-3-large for traditional chunking")
-    elif chunking_strategy == 2:
+    elif chunking_strategy == ChunkingStrategy.CONTEXTUAL:
         # Voyage contextual chunking
         Settings.embed_model = VoyageEmbedding(
             model="voyage-context-3",
@@ -119,12 +134,19 @@ def configure_embedding_model(chunking_strategy: int):
         )
         utils.logger.info("Configured Voyage voyage-context-3 for contextual chunking")
     else:
-        raise ValueError(f"Invalid chunking strategy: {chunking_strategy}. Must be 1 (OpenAI) or 2 (Voyage)")
+        raise ValueError(f"Invalid chunking strategy: {chunking_strategy}. Must be TRADITIONAL or CONTEXTUAL")
 
 
 def refresh_embedding_model():
-    """Refresh the embedding model based on the current CHUNKING_STRATEGY."""
-    configure_embedding_model(CHUNKING_STRATEGY)
+    """Refresh the embedding model based on the current CURRENT_CHUNKING_STRATEGY."""
+    configure_embedding_model(CURRENT_CHUNKING_STRATEGY)
+
+def set_chunking_strategy(strategy: ChunkingStrategy):
+    """Set the current chunking strategy and update the embedding model."""
+    global CURRENT_CHUNKING_STRATEGY
+    CURRENT_CHUNKING_STRATEGY = strategy
+    configure_embedding_model(strategy)
+    utils.logger.info(f"Switched to {strategy.value} chunking strategy")
 
 import warnings
 # Suppress the specific FutureWarning from torch
@@ -312,7 +334,7 @@ class VoyageEmbedding(BaseEmbedding):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Manages startup and shutdown tasks for the FastAPI application."""
-    global REACT_AGENT_PROMPT, LANCEDB_FOLDERPATH, AUTHENTICATION_KEY, DOCUMENTATION_FOLDERPATH, QA_PAIRS_GITHUB_REPO_URL, QA_PAIRS_FOLDERPATH, DOCUMENTATION_NEW_VERSIONS, DOCUMENTATION_EOC_VERSIONS, DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS, DOCUMENTATION_IA_PRODUCT_VERSIONS, DOCUMENTATION_IA_SELFMANAGED_VERSIONS, MAX_ITERATIONS, LLM_MODEL, CHUNKING_STRATEGY
+    global REACT_AGENT_PROMPT, LANCEDB_FOLDERPATH, AUTHENTICATION_KEY, DOCUMENTATION_FOLDERPATH, QA_PAIRS_GITHUB_REPO_URL, QA_PAIRS_FOLDERPATH, DOCUMENTATION_NEW_VERSIONS, DOCUMENTATION_EOC_VERSIONS, DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS, DOCUMENTATION_IA_PRODUCT_VERSIONS, DOCUMENTATION_IA_SELFMANAGED_VERSIONS, MAX_ITERATIONS, LLM_MODEL
 
     lillisa_server_env = utils.LILLISA_SERVER_ENV_DICT
 
@@ -358,13 +380,6 @@ async def lifespan(_app: FastAPI):
     else:
         utils.logger.critical("LLM_MODEL not found in lillisa_server.env")
         raise ValueError("LLM_MODEL not found in lillisa_server.env")
-
-    # Load chunking strategy
-    if chunking_str := lillisa_server_env.get("CHUNKING_STRATEGY"):
-        globals()["CHUNKING_STRATEGY"] = int(chunking_str)
-    else:
-        utils.logger.critical("CHUNKING_STRATEGY not found in lillisa_server.env")
-        raise ValueError("CHUNKING_STRATEGY not found in lillisa_server.env")
 
     # Load documentation versions
     for key, var in [
@@ -416,8 +431,8 @@ async def lifespan(_app: FastAPI):
         utils.logger.critical("VOYAGE_API_KEY_FILEPATH not found in lillisa_server.env")
         raise ValueError("VOYAGE_API_KEY_FILEPATH not found in lillisa_server.env")
 
-    # Configure embedding model based on chunking strategy
-    configure_embedding_model(CHUNKING_STRATEGY)
+    # Configure embedding model with traditional chunking (default startup strategy)
+    configure_embedding_model(ChunkingStrategy.TRADITIONAL)
 
     # Validate LanceDB folder path
     if not os.path.exists(LANCEDB_FOLDERPATH):
@@ -1147,8 +1162,8 @@ async def update_golden_qa_pairs(product: str, encrypted_key: str, background_ta
 async def _run_rebuild_docs_task_traditional():
     """Contains the core logic for rebuilding docs using traditional chunking, run as a background task."""
     try:
-        # Configure OpenAI embedding model for traditional chunking
-        configure_embedding_model(1)
+        # Set chunking strategy to traditional
+        set_chunking_strategy(ChunkingStrategy.TRADITIONAL)
         utils.logger.info("Background task: Starting documentation rebuild with traditional chunking.")
         failed_clone_messages = ""
         product_repos_dict = {
@@ -1391,8 +1406,8 @@ async def _run_rebuild_docs_task_traditional():
 async def _run_rebuild_docs_task_contextual():
     """Contains the core logic for rebuilding docs using contextual chunking, run as a background task."""
     try:
-        # Configure Voyage embedding model for contextual chunking
-        configure_embedding_model(2)
+        # Set chunking strategy to contextual
+        set_chunking_strategy(ChunkingStrategy.CONTEXTUAL)
         utils.logger.info("Background task: Starting documentation rebuild with contextual chunking.")
         failed_clone_messages = ""
         product_repos_dict = {
@@ -1763,22 +1778,45 @@ async def _run_rebuild_docs_task_contextual():
 
 
 async def _run_rebuild_docs_task():
-    """Main function that calls the appropriate rebuild strategy based on CHUNKING_STRATEGY."""
-    if CHUNKING_STRATEGY == 1:
-        utils.logger.info(f"Using traditional chunking strategy (OpenAI text-embedding-3-large)")
+    """Main function that uses traditional chunking by default for startup."""
+    utils.logger.info("Using traditional chunking strategy (OpenAI text-embedding-3-large) for startup")
+    await _run_rebuild_docs_task_traditional()
+
+async def _run_complete_rebuild_traditional():
+    """Rebuilds both documents and QA pairs with traditional chunking strategy."""
+    utils.logger.info("Starting complete rebuild with traditional chunking (documents + QA pairs)")
+    try:
+        # Set chunking strategy to traditional
+        set_chunking_strategy(ChunkingStrategy.TRADITIONAL)
+        # Rebuild documents with traditional chunking
         await _run_rebuild_docs_task_traditional()
-    elif CHUNKING_STRATEGY == 2:
-        utils.logger.info(f"Using contextual chunking strategy (Voyage voyage-context-3)")
+        # Rebuild QA pairs with traditional embedding model
+        await _run_update_golden_qa_pairs_task()
+        utils.logger.info("Complete traditional rebuild finished successfully")
+    except Exception as e:
+        utils.logger.error(f"Complete traditional rebuild failed: {e}", exc_info=True)
+        raise
+
+async def _run_complete_rebuild_contextual():
+    """Rebuilds both documents and QA pairs with contextual chunking strategy."""
+    utils.logger.info("Starting complete rebuild with contextual chunking (documents + QA pairs)")
+    try:
+        # Set chunking strategy to contextual
+        set_chunking_strategy(ChunkingStrategy.CONTEXTUAL)
+        # Rebuild documents with contextual chunking
         await _run_rebuild_docs_task_contextual()
-    else:
-        utils.logger.error(f"Invalid chunking strategy: {CHUNKING_STRATEGY}. Must be 1 (traditional) or 2 (contextual)")
-        raise ValueError(f"Invalid chunking strategy: {CHUNKING_STRATEGY}")
+        # Rebuild QA pairs with contextual embedding model
+        await _run_update_golden_qa_pairs_task()
+        utils.logger.info("Complete contextual rebuild finished successfully")
+    except Exception as e:
+        utils.logger.error(f"Complete contextual rebuild failed: {e}", exc_info=True)
+        raise
 
 
 @app.post("/rebuild_docs/", response_model=str, response_class=PlainTextResponse)
 async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
     """
-    Initiates the documentation database rebuild in the background.
+    Initiates the complete documentation database rebuild using traditional chunking (for backward compatibility).
 
     Args:
         encrypted_key (str): JWT key for authentication.
@@ -1788,8 +1826,44 @@ async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) ->
         str: Immediate confirmation message.
     """
     jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
-    background_tasks.add_task(_run_rebuild_docs_task)
-    return "Documentation rebuild initiated. Changes will become effective in ~1 hour. Until then, Rocknbot will continue to answer questions using current docs"
+    background_tasks.add_task(_run_complete_rebuild_traditional)
+    return "Complete traditional rebuild initiated (OpenAI text-embedding-3-large). Rebuilding documents and QA pairs. Changes will become effective in ~1 hour. Until then, Rocknbot will continue to answer questions using current docs"
+
+@app.post("/rebuild_docs_traditional/", response_model=str, response_class=PlainTextResponse)
+async def rebuild_docs_traditional(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
+    """
+    Initiates the complete rebuild using traditional OpenAI chunking with text-embedding-3-large for both documents and QA pairs.
+
+    Args:
+        encrypted_key (str): JWT key for authentication.
+        background_tasks (BackgroundTasks): FastAPI background task manager.
+
+    Returns:
+        str: Immediate confirmation message.
+    """
+    jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
+    # Immediately switch to traditional chunking strategy for query embeddings
+    set_chunking_strategy(ChunkingStrategy.TRADITIONAL)
+    background_tasks.add_task(_run_complete_rebuild_traditional)
+    return "Complete traditional rebuild initiated (OpenAI text-embedding-3-large). Rebuilding documents and QA pairs. Changes will become effective in ~1 hour. Query embedding model switched to OpenAI text-embedding-3-large."
+
+@app.post("/rebuild_docs_contextual/", response_model=str, response_class=PlainTextResponse)
+async def rebuild_docs_contextual(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
+    """
+    Initiates the complete rebuild using contextual Voyage chunking with voyage-context-3 for both documents and QA pairs.
+
+    Args:
+        encrypted_key (str): JWT key for authentication.
+        background_tasks (BackgroundTasks): FastAPI background task manager.
+
+    Returns:
+        str: Immediate confirmation message.
+    """
+    jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
+    # Immediately switch to contextual chunking strategy for query embeddings
+    set_chunking_strategy(ChunkingStrategy.CONTEXTUAL)
+    background_tasks.add_task(_run_complete_rebuild_contextual)
+    return "Complete contextual rebuild initiated (Voyage voyage-context-3). Rebuilding documents and QA pairs. Changes will become effective in ~1 hour. Query embedding model switched to Voyage voyage-context-3."
 
 @app.post("/cleanup_sessions/", response_model=str, response_class=PlainTextResponse)
 async def cleanup_sessions(encrypted_key: str) -> str:
