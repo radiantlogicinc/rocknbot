@@ -40,11 +40,6 @@ from llama_index.core import (
     VectorStoreIndex,
 )
 
-os.environ["OTEL_SDK_DISABLED"] = "true"
-os.environ["OTEL_TRACES_EXPORTER"] = "none"
-os.environ["OTEL_METRICS_EXPORTER"] = "none"
-os.environ["OTEL_LOGS_EXPORTER"] = "none"
-
 from llama_index.core.agent import ReActAgent
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.llms import LLM, ChatMessage, ChatResponse, LLMMetadata
