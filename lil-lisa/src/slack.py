@@ -310,6 +310,11 @@ async def reaction(event, say):
     conv_id = first_msg.get("thread_ts") or first_msg.get("ts")
     is_expert = (event["user"] == determine_product_and_expert(channel_id)[1])
 
+    _, expert_user_id = determine_product_and_expert(channel_id)
+
+    if event["reaction"].startswith("sos"):
+        _ = await say(channel=channel_id, text=f"<@{expert_user_id}> Can you help?", thread_ts=conv_id)
+
     # Get the message text to determine if this is a chunk message
     message_text = first_msg.get("text", "")
     

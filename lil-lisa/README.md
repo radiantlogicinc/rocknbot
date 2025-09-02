@@ -102,9 +102,7 @@ After deployment, you can switch between chunking strategies using slash command
 ## Support
 
 Reach out to us if you have questions:
-- Carlos Escobar (Slack: @Carlos Escobar, Email: cescobar@radiantlogic.com)
 - Dhar Rawal (Slack: @Dhar Rawal, Email: drawal@radiantlogic.com)
-- Unsh Rawal (Slack: @Unsh Rawal, Email: urawal@radiantlogic.com)
 
 ## Authors and acknowledgment
 
@@ -112,6 +110,7 @@ Reach out to us if you have questions:
 - Dhar Rawal
 - Unsh Rawal
 - Nico Guyot
+- Priyanshu Jani
 
 ## License
 
