@@ -578,12 +578,72 @@ async def update_golden_qa_pairs(ack, body, say):    # pylint: disable=too-many-
         return "An error occured"
 
 
-@app.command("/rebuild_docs")
-async def rebuild_docs(ack, body, say):
+# @app.command("/rebuild_docs")
+# async def rebuild_docs(ack, body, say):
+#     """
+#     Slack command to rebuild the documentation database.
+
+#     This asynchronous function is a Slack slash command handler for "/rebuild_docs". It sends progress and success messages in the Slack channel.
+
+#     Args:
+#         ack (function): A function used to acknowledge the Slack command.
+#         body (dict): A dictionary containing the payload of the event, command, or action.
+#         say (function): A function used to send messages in Slack.
+
+#     """
+#     await ack()
+#     user_id = body.get("user_id")
+#     channel_id = body.get("channel_id")
+
+#     direct_message_convo = await app.client.conversations_open(users=user_id)
+#     dm_channel_id = direct_message_convo.data["channel"]["id"]
+#     contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
+#         ADMIN_CHANNEL_ID_IDA, user_id
+#     )
+#     if not contains_user:
+#         # Return an error message or handle unauthorized users
+#         await say(
+#             text="""Unauthorized! Please contact one of the admins (@nico/@Dhar Rawal) and ask for authorization. Once you are added to the appropriate admin Slack channel, you will be able to use '/' commands to manage rocknbot.""",
+#         )
+#         return
+
+#     product, _ = determine_product_and_expert(channel_id)
+
+#     if product is None:
+#         _ = await say(
+#             channel=dm_channel_id,
+#             text="I am unable to retrieve the golden QA pairs from this channel. Please go to the approriate channel and try the command again.",
+#         )
+#         return
+#     _ = await say(
+#         channel=dm_channel_id,
+#         text="You are rebuilding the entire documentation database. This process will take approximately 15-20 minutes.",
+#     )
+#     try:
+#         # Call the rebuild_docs API
+#         full_url = f"{BASE_URL}/rebuild_docs/"
+#         if response := requests.post(
+#             full_url,
+#             params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
+#             timeout=2700,
+#         ):
+#             _ = await say(channel=dm_channel_id, text=response.text)
+#         else:
+#             error_msg = f"Call to lil-lisa server {full_url} has failed."
+#             logger.error(error_msg)
+#             return error_msg
+
+#     except Exception as exc:  # pylint: disable=broad-except
+#         logger.error(f"An error occurred during the asynchronous call rebuild_docs(): {exc}")
+#         return "An error occured"
+
+@app.command("/rebuild_docs_traditional")
+async def rebuild_docs_traditional(ack, body, say):
     """
     Slack command to rebuild the documentation database.
 
-    This asynchronous function is a Slack slash command handler for "/rebuild_docs". It sends progress and success messages in the Slack channel.
+    This asynchronous function is a Slack slash command handler for "/rebuild_docs_traditional". It sends progress and success messages in the Slack channel.
+    This functions rebuild the documnt with traditional chunking using openai text-embedding-large-3.
 
     Args:
         ack (function): A function used to acknowledge the Slack command.
@@ -617,11 +677,11 @@ async def rebuild_docs(ack, body, say):
         return
     _ = await say(
         channel=dm_channel_id,
-        text="You are rebuilding the entire documentation database. This process will take approximately 15-20 minutes.",
+        text="You are rebuilding the entire documentation database with traditional chunking. This process will take approximately 15-20 minutes.",
     )
     try:
-        # Call the rebuild_docs API
-        full_url = f"{BASE_URL}/rebuild_docs/"
+        # Call the rebuild_docs_traditional API
+        full_url = f"{BASE_URL}/rebuild_docs_traditional/"
         if response := requests.post(
             full_url,
             params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
@@ -637,6 +697,65 @@ async def rebuild_docs(ack, body, say):
         logger.error(f"An error occurred during the asynchronous call rebuild_docs(): {exc}")
         return "An error occured"
 
+@app.command("/rebuild_docs_contextual")
+async def rebuild_docs_contextual(ack, body, say):
+    """
+    Slack command to rebuild the documentation database.
+
+    This asynchronous function is a Slack slash command handler for "/rebuild_docs_contextual". It sends progress and success messages in the Slack channel.
+    This functions rebuild the documnt with contextual chunking using voyage voyage-context-3.
+
+    Args:
+        ack (function): A function used to acknowledge the Slack command.
+        body (dict): A dictionary containing the payload of the event, command, or action.
+        say (function): A function used to send messages in Slack.
+
+    """
+    await ack()
+    user_id = body.get("user_id")
+    channel_id = body.get("channel_id")
+
+    direct_message_convo = await app.client.conversations_open(users=user_id)
+    dm_channel_id = direct_message_convo.data["channel"]["id"]
+    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
+        ADMIN_CHANNEL_ID_IDA, user_id
+    )
+    if not contains_user:
+        # Return an error message or handle unauthorized users
+        await say(
+            text="""Unauthorized! Please contact one of the admins (@nico/@Dhar Rawal) and ask for authorization. Once you are added to the appropriate admin Slack channel, you will be able to use '/' commands to manage rocknbot.""",
+        )
+        return
+
+    product, _ = determine_product_and_expert(channel_id)
+
+    if product is None:
+        _ = await say(
+            channel=dm_channel_id,
+            text="I am unable to retrieve the golden QA pairs from this channel. Please go to the approriate channel and try the command again.",
+        )
+        return
+    _ = await say(
+        channel=dm_channel_id,
+        text="You are rebuilding the entire documentation database with contextual chunking. This process will take approximately 15-20 minutes.",
+    )
+    try:
+        # Call the rebuild_docs_contextual API
+        full_url = f"{BASE_URL}/rebuild_docs_contextual/"
+        if response := requests.post(
+            full_url,
+            params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
+            timeout=2700,
+        ):
+            _ = await say(channel=dm_channel_id, text=response.text)
+        else:
+            error_msg = f"Call to lil-lisa server {full_url} has failed."
+            logger.error(error_msg)
+            return error_msg
+
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error(f"An error occurred during the asynchronous call rebuild_docs(): {exc}")
+        return "An error occured"
 
 @app.command("/cleanup_sessions")
 async def cleanup_sessions(ack, body, say):

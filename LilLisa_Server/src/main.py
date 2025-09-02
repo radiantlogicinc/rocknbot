@@ -1902,21 +1902,21 @@ async def _run_complete_rebuild_contextual():
         raise
 
 
-@app.post("/rebuild_docs/", response_model=str, response_class=PlainTextResponse)
-async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
-    """
-    Initiates the complete documentation database rebuild using traditional chunking (for backward compatibility).
+# @app.post("/rebuild_docs/", response_model=str, response_class=PlainTextResponse)
+# async def rebuild_docs(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
+#     """
+#     Initiates the complete documentation database rebuild using traditional chunking (for backward compatibility).
 
-    Args:
-        encrypted_key (str): JWT key for authentication.
-        background_tasks (BackgroundTasks): FastAPI background task manager.
+#     Args:
+#         encrypted_key (str): JWT key for authentication.
+#         background_tasks (BackgroundTasks): FastAPI background task manager.
 
-    Returns:
-        str: Immediate confirmation message.
-    """
-    jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
-    background_tasks.add_task(_run_complete_rebuild_traditional)
-    return "Complete traditional rebuild initiated (OpenAI text-embedding-3-large). Rebuilding documents and QA pairs. Changes will become effective in ~1 hour. Until then, Rocknbot will continue to answer questions using current docs"
+#     Returns:
+#         str: Immediate confirmation message.
+#     """
+#     jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
+#     background_tasks.add_task(_run_complete_rebuild_traditional)
+#     return "Complete traditional rebuild initiated (OpenAI text-embedding-3-large). Rebuilding documents and QA pairs. Changes will become effective in ~1 hour. Until then, Rocknbot will continue to answer questions using current docs"
 
 @app.post("/rebuild_docs_traditional/", response_model=str, response_class=PlainTextResponse)
 async def rebuild_docs_traditional(encrypted_key: str, background_tasks: BackgroundTasks) -> str:
