@@ -33,11 +33,37 @@ Methods free to use are:
 
 **/invoke**
 
-Uses a session ID to retrieve past conversation history. Based on a query, it searches relevant documents in the knowledge base and retrieves multiple fewshot examples from the QA pairs database to help synthesis of a formatted answer. Queries are handled differently and depend on whether an expert is answering or not. ReACT agent handles the use of information given to intellignetly craft an answer.
+Uses a session ID to retrieve past conversation history. Based on a query, it searches relevant documents in the knowledge base and retrieves multiple fewshot examples from the QA pairs database to help synthesis of a formatted answer. Queries are handled differently and depend on whether an expert is answering or not. ReACT agent handles the use of information given to intellignetly craft an answer. This endpoint is primarily used for the LilLisa Slack bot integration.
+
+**/invoke_stream_with_nodes/**
+
+Streams the Chain of Thought (CoT) and Answer (ANS) in HTML format, along with the top relevant nodes from the knowledge base. This endpoint is designed for the web interface, allowing for a streaming response that shows the reasoning process and final answer incrementally. Like the invoke endpoint, it uses session history and ReACT agent to craft responses, but returns the data as a streaming response with HTML formatting for better web display.
 
 **/record_endorsement**
 
 Records an endorsemewnt, usually given when an answer is correct, by either a "user" or "expert". This is helpful when admins call the 'get_conversations' method and use it to create more golden QA pairs.
+
+Administrative methods requiring JWT encryption key:
+
+**/get_golden_qa_pairs/**
+
+Retrieves golden QA pairs for a specified product from a GitHub repository. This endpoint requires authentication via JWT token to access the QA pairs data. The response is a Markdown file containing the QA pairs for the requested product.
+
+**/update_golden_qa_pairs/**
+
+Initiates the update of golden QA pairs in LanceDB for a specified product in the background. This endpoint triggers a process that clones the latest QA pairs from the repository and updates the vector database. Changes take approximately 2 minutes to become effective.
+
+**/rebuild_docs_traditional/**
+
+Initiates a complete rebuild of the documentation database using traditional OpenAI chunking with text-embedding-3-large for both documents and QA pairs. This is an administrative function that can take up to an hour to complete as it rebuilds all document and QA pair indices.
+
+**/rebuild_docs_contextual/**
+
+Initiates a complete rebuild using contextual Voyage chunking with voyage-context-3 for both documents and QA pairs. This endpoint provides an alternative embedding model for potentially improved semantic search capability on contextual queries.
+
+**/cleanup_sessions/**
+
+Deletes session folders under SPEEDICT_FOLDERPATH that are older than the configured retention period. This endpoint requires the environment variable `SESSION_LIFETIME_DAYS` (e.g., `SESSION_LIFETIME_DAYS = 30`) to determine which sessions to remove based on their age. This helps manage disk space by removing outdated conversation histories.
 
 ## Contributing
 
@@ -47,7 +73,7 @@ The project is not currently open for contributions.
 - Docker container
 - Python 3.11.9 
 - RAM: 1.0 GB
-- Size of Docker container: 11.2 GB
+- Size of Docker container: 23.6 GB
 
 ### Pushing to Cloud
 
@@ -57,9 +83,7 @@ For assistance with deploying to AWS Lambda, refer to this blog:
 ## Support
 
 Reach out to us if you have questions:
-- Carlos Escobar (Slack: @Carlos Escobar, Email: cescobar@radiantlogic.com)
 - Dhar Rawal (Slack: @Dhar Rawal, Email: drawal@radiantlogic.com)
-- Unsh Rawal (Slack: @Unsh Rawal, Email: urawal@radiantlogic.com)
 
 ## Authors and acknowledgment
 
@@ -67,6 +91,7 @@ Reach out to us if you have questions:
 - Dhar Rawal
 - Unsh Rawal
 - Nico Guyot
+- Priyanshu Jani
 
 ## License
 

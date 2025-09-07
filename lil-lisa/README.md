@@ -44,9 +44,17 @@ Ingests changes made to the QA pairs github repository by deleting the previous 
 
 Retrieves conversations from a local folder that were endorsed by [endorsed_by]
 
-**/rebuild_docs**
+**/rebuild_docs_traditional**
 
-Ingests changes made to the knowledge base (github repository) by deleting the previous LanceDB tables and recreating with up-to-date data
+Ingests changes made to the knowledge base (github repository) by deleting the previous LanceDB tables and recreating with up-to-date data using traditional chunking with OpenAI text-embedding-large-3
+
+**/rebuild_docs_contextual**
+
+Ingests changes made to the knowledge base (github repository) by deleting the previous LanceDB tables and recreating with up-to-date data using contextual chunking with Voyage voyage-context-3
+
+**/cleanup_sessions**
+
+Removes old session data based on the configured retention period to free up storage space and maintain system performance
 
 ## Contributing
 
@@ -67,12 +75,34 @@ The project is not currently open for contributions.
 - In the terminal, run "make _build-local". This will create a conda environment and install all necessary packages
 - Select 'lil-lisa' as python interpreter
 
+### Environment Configuration
+
+The application uses several environment variables configured in `app_envfiles/lil-lisa.env`:
+
+- **MAX_LENGTH**: Controls the maximum length of messages sent to Slack (e.g., `MAX_LENGTH = 4000`). Messages exceeding this limit will be truncated to ensure proper formatting and delivery.
+- Other Slack API tokens and channel configurations as required
+
+### Deployment Instructions
+
+**Important for Deployment Teams:**
+
+The application now supports two different document chunking strategies:
+
+1. **Traditional Chunking** (Default): Uses OpenAI text-embedding-3-large
+2. **Contextual Chunking**: Uses Voyage voyage-context-3
+
+**Initial Deployment Behavior:**
+- When the application is freshly deployed without an existing document store, it will automatically create the documentation database using **traditional chunking** as the default method.
+
+**Switching Chunking Strategies:**
+After deployment, you can switch between chunking strategies using slash commands:
+- Execute `/rebuild_docs_traditional` to rebuild the knowledge base using traditional chunking with OpenAI text-embedding-3-large
+- Execute `/rebuild_docs_contextual` to rebuild the knowledge base using contextual chunking with Voyage voyage-context-3
+
 ## Support
 
 Reach out to us if you have questions:
-- Carlos Escobar (Slack: @Carlos Escobar, Email: cescobar@radiantlogic.com)
 - Dhar Rawal (Slack: @Dhar Rawal, Email: drawal@radiantlogic.com)
-- Unsh Rawal (Slack: @Unsh Rawal, Email: urawal@radiantlogic.com)
 
 ## Authors and acknowledgment
 
@@ -80,6 +110,7 @@ Reach out to us if you have questions:
 - Dhar Rawal
 - Unsh Rawal
 - Nico Guyot
+- Priyanshu Jani
 
 ## License
 

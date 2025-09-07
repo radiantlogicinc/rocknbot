@@ -167,6 +167,125 @@ async def get_ans(query, thread_id, msg_id, product, is_expert_answering):
     return response.text
 
 
+async def add_expert_verified_qa_pair(item_ts, channel_id, expert_user_id):
+    """
+    Automatically add expert-verified question-answer pair to golden QA pairs and DM expert.
+    Extracts the actual thumbs-upped message and finds the corresponding question from Slack.
+    
+    Args:
+        item_ts: The timestamp of the message that received thumbs up
+        channel_id: The channel where the endorsement happened
+        expert_user_id: The expert user ID to DM
+    """
+    try:
+        # Get the actual message that was thumbs-upped
+        resp = await app.client.conversations_replies(ts=item_ts, channel=channel_id)
+        thumbs_up_message = resp["messages"][0]
+        
+        # Get the full thread to find the original question
+        thread_ts = thumbs_up_message.get("thread_ts") or thumbs_up_message.get("ts")
+        thread_resp = await app.client.conversations_replies(ts=thread_ts, channel=channel_id)
+        thread_messages = thread_resp["messages"]
+        
+        # Find the original user question and the thumbs-upped answer
+        user_question = None
+        expert_answer = thumbs_up_message.get("text", "").strip()
+        
+        # Look for the first non-bot message in the thread (original question)
+        # Skip bot messages and processing messages
+        for message in thread_messages:
+            msg_user = message.get("user")
+            msg_text = message.get("text", "").strip()
+            
+            # Skip bot messages, processing messages, and empty messages
+            if (msg_user != BOT_USER_ID and 
+                msg_text and 
+                msg_text.lower() != "processing..." and
+                not msg_text.startswith("*Chunk ")):
+                user_question = msg_text
+                break
+        
+        # Clean up the question (remove bot mentions)
+        if user_question:
+            user_question = user_question.replace(f"<@{LIL_LISA_SLACK_USERID}>", "").strip()
+            # Remove any leading "> " quoting
+            text_items = user_question.split("> ")
+            user_question = text_items[1] if len(text_items) == 2 else text_items[0]
+        
+        # Clean up the answer (remove any #answer prefix if present)
+        if expert_answer.lower().startswith("#answer"):
+            expert_answer = expert_answer[7:].lstrip()
+        
+        if not user_question or not expert_answer:
+            logger.warning(f"Could not extract complete Q&A pair. Question: {bool(user_question)}, Answer: {bool(expert_answer)}")
+            return
+        
+        # Determine product based on channel
+        product, _ = determine_product_and_expert(channel_id)
+        
+        if not product:
+            logger.warning(f"Could not determine product for channel {channel_id}")
+            return
+        
+        # Call the new endpoint to add the QA pair
+        full_url = f"{BASE_URL}/add_expert_qa_pair/"
+        
+        response = requests.post(
+            full_url,
+            json={
+                "question": user_question,
+                "answer": expert_answer,
+                "product": product,
+                "expert_user_id": expert_user_id,
+                "channel_id": channel_id,
+                "message_ts": item_ts
+            },
+            params={
+                "encrypted_key": ENCRYPTED_AUTHENTICATION_KEY
+            },
+            timeout=90,
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get("success"):
+                # DM the expert with the new QA pair
+                direct_message_convo = await app.client.conversations_open(users=expert_user_id)
+                dm_channel_id = direct_message_convo.data["channel"]["id"]
+                
+                qa_pair_text = f"""🎉 **New Expert-Verified QA Pair Added!**
+
+**Question:** 
+{user_question}
+
+**Answer:** 
+{expert_answer}
+
+**Product:** {product}
+
+This QA pair has been automatically added to the golden QA database. Please consider updating the official documentation with this verified information.
+
+*Format for official documentation:*
+```
+Question: {user_question}
+
+Answer: {expert_answer}
+```"""
+                
+                await app.client.chat_postMessage(
+                    channel=dm_channel_id,
+                    text=qa_pair_text
+                )
+                logger.info(f"Successfully added expert QA pair and notified expert {expert_user_id}")
+            else:
+                logger.warning(f"Failed to add QA pair: {result.get('message', 'Unknown error')}")
+        else:
+            logger.error(f"Failed to add expert QA pair: HTTP {response.status_code} - {response.text}")
+            
+    except Exception as exc:
+        logger.error(f"Error in add_expert_verified_qa_pair: {exc}")
+
+
 async def record_endorsement(conv_id, is_expert, thumbs_up, endorsement_type="response", query_id=None, chunk_index=None, chunk_text=None, chunk_url=None):
     """Record feedback given to a bot response"""
     try:
@@ -281,22 +400,28 @@ async def process_msg(event, say):
 async def reaction(event, say):
     """
     1) Ensure we know our BOT_USER_ID.
-    2) Compare event['item_user'] to BOT_USER_ID (not the old env var).
-    3) On 👍, record endorsement. On 👎, unpack reranked_nodes from cache.
-    4) Handle chunk-specific reactions on individual chunk messages.
+    2) Handle reactions from experts to ANY message in the thread.
+    3) On 👍 from expert, add to golden QA pairs and record endorsement.
+    4) On 👎 from expert to bot messages, unpack reranked_nodes from cache.
+    5) Handle chunk-specific reactions on individual chunk messages.
     """
     await ensure_bot_id()
 
     channel_id = event["item"]["channel"]
     item_ts = event["item"]["ts"]
     item_user = event["item_user"]
+    reactor_user_id = event["user"]
 
-    # 1) Only proceed if the message was posted by bot
-    if item_user != BOT_USER_ID:
-        logger.info(f"[IGNORE] Message ts={item_ts} was not posted by our bot, skipping.")
+    # Determine product and expert for this channel
+    product, expert_user_id = determine_product_and_expert(channel_id)
+    if not product or not expert_user_id:
+        logger.info(f"[IGNORE] Unknown channel {channel_id}, skipping reaction.")
         return
 
-    # 2) Determine if this is a 👍 or a 👎
+    # Check if the reactor is an expert
+    is_expert = (reactor_user_id == expert_user_id)
+
+    # 1) Determine if this is a 👍 or a 👎
     reaction_name = event["reaction"]
     thumbs_up = None
     if reaction_name.startswith("+1"):
@@ -308,104 +433,132 @@ async def reaction(event, say):
     resp = await app.client.conversations_replies(ts=item_ts, channel=channel_id)
     first_msg = resp["messages"][0]
     conv_id = first_msg.get("thread_ts") or first_msg.get("ts")
-    is_expert = (event["user"] == determine_product_and_expert(channel_id)[1])
 
-    # Get the message text to determine if this is a chunk message
-    message_text = first_msg.get("text", "")
-    
-    # 3) Check if this is a chunk message (starts with "*Chunk X*")
-    if message_text.startswith("*Chunk ") and "*" in message_text[7:]:
-        # This is a chunk message - extract chunk information
-        chunk_header_end = message_text.find("*", 7) + 1
-        chunk_header = message_text[:chunk_header_end]
+    # Handle SOS reactions
+    if event["reaction"].startswith("sos"):
+        _ = await say(channel=channel_id, text=f"<@{expert_user_id}> Can you help?", thread_ts=conv_id)
+        return
+
+    # 2) If expert gives thumbs up to ANY message (except chunks), add to golden QA pairs
+    if thumbs_up is True and is_expert:
+        # Get the message text to check if this is a chunk message
+        resp = await app.client.conversations_replies(ts=item_ts, channel=channel_id)
+        reacted_message = resp["messages"][0]
+        message_text = reacted_message.get("text", "")
         
-        # Extract chunk index from header (e.g., "*Chunk 3*" -> 3)
-        try:
-            chunk_index = int(chunk_header.split()[1].rstrip("*")) - 1  # Convert to 0-based index
-        except (IndexError, ValueError):
-            chunk_index = 0
+        # Skip golden QA pair addition for chunk messages
+        if message_text.startswith("*Chunk ") and "*" in message_text[7:]:
+            logger.info(f"[EXPERT THUMBS UP CHUNK] Expert {expert_user_id} gave thumbs up to chunk {item_ts} - skipping golden QA pair addition")
+        else:
+            logger.info(f"[EXPERT THUMBS UP] Expert {expert_user_id} gave thumbs up to message {item_ts}")
+            await add_expert_verified_qa_pair(item_ts, channel_id, expert_user_id)
+
+    # 3) Handle bot-specific message reactions (for endorsement recording and chunk display)
+    if item_user == BOT_USER_ID:
+        # Get the message text to determine if this is a chunk message
+        message_text = first_msg.get("text", "")
+        
+        # 4) Check if this is a chunk message (starts with "*Chunk X*")
+        if message_text.startswith("*Chunk ") and "*" in message_text[7:]:
+            # This is a chunk message - extract chunk information
+            chunk_header_end = message_text.find("*", 7) + 1
+            chunk_header = message_text[:chunk_header_end]
             
-        # Extract chunk text (everything after the header)
-        chunk_content = message_text[chunk_header_end:].strip()
-        
-        # Split by newlines and find GitHub URL
-        lines = chunk_content.split('\n')
-        chunk_url = ""
-        github_line_index = -1
-        
-        # Look for GitHub URL and extract it (handle both formats)
-        for i, line in enumerate(lines):
-            line_stripped = line.strip()
-            if line_stripped.startswith("https://github.com") or line_stripped.startswith("<https://github.com"):
-                # Extract URL from markdown format <https://...> or plain format
-                if line_stripped.startswith("<") and line_stripped.endswith(">"):
-                    chunk_url = line_stripped[1:-1]  # Remove < and >
-                else:
-                    chunk_url = line_stripped
-                github_line_index = i
-                break
-        
-        # Extract chunk text (everything except the GitHub URL line)
-        if github_line_index >= 0:
-            # Remove the GitHub URL line from the chunk text
-            chunk_text_lines = lines[:github_line_index] + lines[github_line_index + 1:]
-            chunk_text = '\n'.join(chunk_text_lines).strip()
+            # Extract chunk index from header (e.g., "*Chunk 3*" -> 3)
+            try:
+                chunk_index = int(chunk_header.split()[1].rstrip("*")) - 1  # Convert to 0-based index
+            except (IndexError, ValueError):
+                chunk_index = 0
+                
+            # Extract chunk text (everything after the header)
+            chunk_content = message_text[chunk_header_end:].strip()
+            
+            # Split by newlines and find GitHub URL
+            lines = chunk_content.split('\n')
+            chunk_url = ""
+            github_line_index = -1
+            
+            # Look for GitHub URL and extract it (handle both formats)
+            for i, line in enumerate(lines):
+                line_stripped = line.strip()
+                if line_stripped.startswith("https://github.com") or line_stripped.startswith("<https://github.com"):
+                    # Extract URL from markdown format <https://...> or plain format
+                    if line_stripped.startswith("<") and line_stripped.endswith(">"):
+                        chunk_url = line_stripped[1:-1]  # Remove < and >
+                    else:
+                        chunk_url = line_stripped
+                    github_line_index = i
+                    break
+            
+            # Extract chunk text (everything except the GitHub URL line)
+            if github_line_index >= 0:
+                # Remove the GitHub URL line from the chunk text
+                chunk_text_lines = lines[:github_line_index] + lines[github_line_index + 1:]
+                chunk_text = '\n'.join(chunk_text_lines).strip()
+            else:
+                chunk_text = chunk_content
 
-        # Record chunk-specific endorsement
-        await record_endorsement(
-            conv_id=conv_id,
-            is_expert=is_expert,
-            thumbs_up=thumbs_up,
-            endorsement_type="chunks",
-            chunk_index=chunk_index,
-            chunk_text=chunk_text,
-            chunk_url=chunk_url
-        )
-        return
-
-    # 4) This is a regular bot response message
-    # On 👍: record endorsement for the response
-    if thumbs_up is True:
-        await record_endorsement(conv_id, is_expert, thumbs_up, endorsement_type="response")
-        await say(channel=channel_id, text="Thank you for your feedback!", thread_ts=conv_id)
-        return
-
-    # 5) On 👎: look up RERANK_CACHE[item_ts] and post each node
-    if thumbs_up is False:
-        # First record the negative endorsement for the response
-        await record_endorsement(conv_id, is_expert, thumbs_up, endorsement_type="response")
-        
-        logger.info(f"[THUMBS-DOWN] item_ts={item_ts} → cache keys: {list(RERANK_CACHE.keys())}")
-        reranked = RERANK_CACHE.get(item_ts)
-
-        # Find the parent thread_ts so new messages go into that same thread
-        parent_thread = first_msg.get("thread_ts") or first_msg.get("ts")
-
-        # Post each node as a separate message under parent_thread
-        for idx, node in enumerate(reranked, start=1):
-            # 1) Extract the core text
-            chunk_text = node.get("text", "").strip()
-            if not chunk_text:
-                continue
-
-            # 2) Pull out only the GitHub URL from metadata (if any)
-            metadata = node.get("metadata", {})
-            github_url = metadata.get("github_url", "").strip()
-
-            # 3) Create header and use the new truncation function
-            header = f"*Chunk {idx}*\n"
-            message = truncate_message_with_url(chunk_text, github_url, header)
-
-            # 4) Post that single, concise message to the same thread
-            logger.info(f"[POST NODE {idx}] thread={parent_thread}, message_length={len(message)}")
-            await app.client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=parent_thread,
-                text=message
+            # Record chunk-specific endorsement
+            await record_endorsement(
+                conv_id=conv_id,
+                is_expert=is_expert,
+                thumbs_up=thumbs_up,
+                endorsement_type="chunks",
+                chunk_index=chunk_index,
+                chunk_text=chunk_text,
+                chunk_url=chunk_url
             )
+            
+            return
 
-        # Clear that cache entry so no repost it on another 👎
-        del RERANK_CACHE[item_ts]
+        # 5) This is a regular bot response message
+        # On 👍: record endorsement for the response
+        if thumbs_up is True:
+            await record_endorsement(conv_id, is_expert, thumbs_up, endorsement_type="response")
+            await say(channel=channel_id, text="Thank you for your feedback!", thread_ts=conv_id)
+            return
+
+        # 6) On 👎: look up RERANK_CACHE[item_ts] and post each node
+        if thumbs_up is False:
+            # First record the negative endorsement for the response
+            await record_endorsement(conv_id, is_expert, thumbs_up, endorsement_type="response")
+            
+            #critical
+            logger.info(f"[THUMBS-DOWN] item_ts={item_ts} → cache keys: {list(RERANK_CACHE.keys())}")
+            reranked = RERANK_CACHE.get(item_ts)
+
+            if not reranked:
+                logger.info(f"[NO CACHE] No reranked nodes found for ts={item_ts}")
+                return
+
+            # Find the parent thread_ts so new messages go into that same thread
+            parent_thread = first_msg.get("thread_ts") or first_msg.get("ts")
+
+            # Post each node as a separate message under parent_thread
+            for idx, node in enumerate(reranked, start=1):
+                # 1) Extract the core text
+                chunk_text = node.get("text", "").strip()
+                if not chunk_text:
+                    continue
+
+                # 2) Pull out only the GitHub URL from metadata (if any)
+                metadata = node.get("metadata", {})
+                github_url = metadata.get("github_url", "").strip()
+
+                # 3) Create header and use the new truncation function
+                header = f"*Chunk {idx}*\n"
+                message = truncate_message_with_url(chunk_text, github_url, header)
+
+                # 4) Post that single, concise message to the same thread
+                logger.info(f"[POST NODE {idx}] thread={parent_thread}, message_length={len(message)}")
+                await app.client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=parent_thread,
+                    text=message
+                )
+
+            # Clear that cache entry so no repost it on another 👎
+            del RERANK_CACHE[item_ts]
 
 async def check_members(channel_id, user_id):
     """
@@ -578,12 +731,72 @@ async def update_golden_qa_pairs(ack, body, say):    # pylint: disable=too-many-
         return "An error occured"
 
 
-@app.command("/rebuild_docs")
-async def rebuild_docs(ack, body, say):
+# @app.command("/rebuild_docs")
+# async def rebuild_docs(ack, body, say):
+#     """
+#     Slack command to rebuild the documentation database.
+
+#     This asynchronous function is a Slack slash command handler for "/rebuild_docs". It sends progress and success messages in the Slack channel.
+
+#     Args:
+#         ack (function): A function used to acknowledge the Slack command.
+#         body (dict): A dictionary containing the payload of the event, command, or action.
+#         say (function): A function used to send messages in Slack.
+
+#     """
+#     await ack()
+#     user_id = body.get("user_id")
+#     channel_id = body.get("channel_id")
+
+#     direct_message_convo = await app.client.conversations_open(users=user_id)
+#     dm_channel_id = direct_message_convo.data["channel"]["id"]
+#     contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
+#         ADMIN_CHANNEL_ID_IDA, user_id
+#     )
+#     if not contains_user:
+#         # Return an error message or handle unauthorized users
+#         await say(
+#             text="""Unauthorized! Please contact one of the admins (@nico/@Dhar Rawal) and ask for authorization. Once you are added to the appropriate admin Slack channel, you will be able to use '/' commands to manage rocknbot.""",
+#         )
+#         return
+
+#     product, _ = determine_product_and_expert(channel_id)
+
+#     if product is None:
+#         _ = await say(
+#             channel=dm_channel_id,
+#             text="I am unable to retrieve the golden QA pairs from this channel. Please go to the approriate channel and try the command again.",
+#         )
+#         return
+#     _ = await say(
+#         channel=dm_channel_id,
+#         text="You are rebuilding the entire documentation database. This process will take approximately 15-20 minutes.",
+#     )
+#     try:
+#         # Call the rebuild_docs API
+#         full_url = f"{BASE_URL}/rebuild_docs/"
+#         if response := requests.post(
+#             full_url,
+#             params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
+#             timeout=2700,
+#         ):
+#             _ = await say(channel=dm_channel_id, text=response.text)
+#         else:
+#             error_msg = f"Call to lil-lisa server {full_url} has failed."
+#             logger.error(error_msg)
+#             return error_msg
+
+#     except Exception as exc:  # pylint: disable=broad-except
+#         logger.error(f"An error occurred during the asynchronous call rebuild_docs(): {exc}")
+#         return "An error occured"
+
+@app.command("/rebuild_docs_traditional")
+async def rebuild_docs_traditional(ack, body, say):
     """
     Slack command to rebuild the documentation database.
 
-    This asynchronous function is a Slack slash command handler for "/rebuild_docs". It sends progress and success messages in the Slack channel.
+    This asynchronous function is a Slack slash command handler for "/rebuild_docs_traditional". It sends progress and success messages in the Slack channel.
+    This functions rebuild the documnt with traditional chunking using openai text-embedding-large-3.
 
     Args:
         ack (function): A function used to acknowledge the Slack command.
@@ -617,11 +830,11 @@ async def rebuild_docs(ack, body, say):
         return
     _ = await say(
         channel=dm_channel_id,
-        text="You are rebuilding the entire documentation database. This process will take approximately 15-20 minutes.",
+        text="You are rebuilding the entire documentation database with traditional chunking. This process will take approximately 15-20 minutes.",
     )
     try:
-        # Call the rebuild_docs API
-        full_url = f"{BASE_URL}/rebuild_docs/"
+        # Call the rebuild_docs_traditional API
+        full_url = f"{BASE_URL}/rebuild_docs_traditional/"
         if response := requests.post(
             full_url,
             params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
@@ -637,6 +850,65 @@ async def rebuild_docs(ack, body, say):
         logger.error(f"An error occurred during the asynchronous call rebuild_docs(): {exc}")
         return "An error occured"
 
+@app.command("/rebuild_docs_contextual")
+async def rebuild_docs_contextual(ack, body, say):
+    """
+    Slack command to rebuild the documentation database.
+
+    This asynchronous function is a Slack slash command handler for "/rebuild_docs_contextual". It sends progress and success messages in the Slack channel.
+    This functions rebuild the documnt with contextual chunking using voyage voyage-context-3.
+
+    Args:
+        ack (function): A function used to acknowledge the Slack command.
+        body (dict): A dictionary containing the payload of the event, command, or action.
+        say (function): A function used to send messages in Slack.
+
+    """
+    await ack()
+    user_id = body.get("user_id")
+    channel_id = body.get("channel_id")
+
+    direct_message_convo = await app.client.conversations_open(users=user_id)
+    dm_channel_id = direct_message_convo.data["channel"]["id"]
+    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
+        ADMIN_CHANNEL_ID_IDA, user_id
+    )
+    if not contains_user:
+        # Return an error message or handle unauthorized users
+        await say(
+            text="""Unauthorized! Please contact one of the admins (@nico/@Dhar Rawal) and ask for authorization. Once you are added to the appropriate admin Slack channel, you will be able to use '/' commands to manage rocknbot.""",
+        )
+        return
+
+    product, _ = determine_product_and_expert(channel_id)
+
+    if product is None:
+        _ = await say(
+            channel=dm_channel_id,
+            text="I am unable to retrieve the golden QA pairs from this channel. Please go to the approriate channel and try the command again.",
+        )
+        return
+    _ = await say(
+        channel=dm_channel_id,
+        text="You are rebuilding the entire documentation database with contextual chunking. This process will take approximately 15-20 minutes.",
+    )
+    try:
+        # Call the rebuild_docs_contextual API
+        full_url = f"{BASE_URL}/rebuild_docs_contextual/"
+        if response := requests.post(
+            full_url,
+            params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
+            timeout=2700,
+        ):
+            _ = await say(channel=dm_channel_id, text=response.text)
+        else:
+            error_msg = f"Call to lil-lisa server {full_url} has failed."
+            logger.error(error_msg)
+            return error_msg
+
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error(f"An error occurred during the asynchronous call rebuild_docs(): {exc}")
+        return "An error occured"
 
 @app.command("/cleanup_sessions")
 async def cleanup_sessions(ack, body, say):
