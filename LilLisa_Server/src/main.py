@@ -73,7 +73,6 @@ from src.llama_index_markdown_reader import MarkdownReader
 from src import observability
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-
 logging.getLogger("LiteLLM").setLevel(logging.INFO)
 logging.getLogger("LiteLLM").handlers.clear()
 
@@ -968,6 +967,155 @@ def invoke(
             }
         utils.logger.critical("Internal error in invoke() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc)
         raise HTTPException(status_code=500, detail=f"Internal error in invoke() for session_id: {session_id}") from exc
+
+@app.post("/add_expert_qa_pair/", response_model=dict, response_class=JSONResponse)
+async def add_expert_qa_pair(
+    encrypted_key: str,
+    qa_data: dict = Body(...)
+) -> dict:
+    """
+    Automatically adds an expert-verified QA pair to the golden QA database.
+    
+    Args:
+        encrypted_key (str): JWT key for authentication (in query params)
+        qa_data (dict): Request body containing:
+            - question (str): The user question
+            - answer (str): The expert answer
+            - product (str): Product ("IDA" or "IDDM")
+            - expert_user_id (str): Expert user ID for tracking
+            - channel_id (str): Slack channel ID
+            - message_ts (str): Message timestamp
+        
+    Returns:
+        dict: Success status with question and answer
+    """
+    try:
+        # Verify authentication
+        jwt.decode(encrypted_key, AUTHENTICATION_KEY, algorithms="HS256")
+        
+        # Extract data from request body
+        question = qa_data.get("question", "").strip()
+        answer = qa_data.get("answer", "").strip()
+        product = qa_data.get("product", "")
+        expert_user_id = qa_data.get("expert_user_id", "")
+        channel_id = qa_data.get("channel_id", "")
+        message_ts = qa_data.get("message_ts", "")
+        
+        if not question or not answer:
+            return JSONResponse(content={
+                "success": False,
+                "message": "Question and answer are required"
+            })
+        
+        if product not in ["IDA", "IDDM"]:
+            return JSONResponse(content={
+                "success": False,
+                "message": f"Invalid product '{product}'. Must be 'IDA' or 'IDDM'"
+            })
+        
+        utils.logger.info(f"Adding expert QA pair for product {product}: Q='{question[:50]}...' A='{answer[:50]}...'")
+        
+        # Add to LanceDB QA pairs table (this appends to existing table, doesn't replace it)
+        await _add_qa_pair_to_lancedb(question, answer, product)
+        
+        # Log the expert verification
+        timestamp = datetime.datetime.utcnow().isoformat()
+        log_entry = {
+            "timestamp": timestamp,
+            "action": "expert_qa_verification",
+            "expert_user_id": expert_user_id,
+            "product": product,
+            "channel_id": channel_id,
+            "message_ts": message_ts,
+            "question": question,
+            "answer": answer
+        }
+        utils.logger.info(f"Expert QA Verification: {json.dumps(log_entry)}")
+        
+        return JSONResponse(content={
+            "success": True,
+            "message": "QA pair added successfully",
+            "question": question,
+            "answer": answer
+        })
+        
+    except jwt.exceptions.InvalidSignatureError as e:
+        raise HTTPException(status_code=401, detail="Failed signature verification. Unauthorized.") from e
+    except Exception as exc:
+        utils.logger.critical("Internal error in add_expert_qa_pair(). Error: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal error in add_expert_qa_pair()") from exc
+
+
+async def _add_qa_pair_to_lancedb(question: str, answer: str, product: str):
+    """
+    Helper function to add a single expert-verified QA pair to the existing LanceDB QA pairs table.
+    This function APPENDS to the existing table, it does NOT replace the entire table.
+    
+    Args:
+        question (str): The user question
+        answer (str): The assistant/expert answer
+        product (str): Product name ("IDA" or "IDDM")
+        
+    Note:
+        This function only adds one new QA pair to the existing table for real-time expert verification.
+    """
+    try:
+        # Validate product
+        if product not in ["IDA", "IDDM"]:
+            raise ValueError(f"Invalid product '{product}'. Must be 'IDA' or 'IDDM'")
+        
+        # Create document from question
+        doc = Document(text=question)
+        doc.metadata["answer"] = answer
+        
+        # Determine version matching based on product
+        if product == "IDDM":
+            product_versions = IDDM_PRODUCT_VERSIONS
+            version_pattern = re.compile(r"v?\d+\.\d+", re.IGNORECASE)
+        else:  # IDA
+            product_versions = IDA_PRODUCT_VERSIONS
+            version_pattern = re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
+        
+        matched_versions = get_matching_versions(question, product_versions, version_pattern)
+        doc.metadata["version"] = matched_versions[0] if matched_versions else "none"
+        doc.excluded_embed_metadata_keys.extend(["version", "answer"])
+        
+        # Create node
+        splitter = SentenceSplitter(chunk_size=10000)
+        nodes = splitter.get_nodes_from_documents(documents=[doc], show_progress=False)
+        
+        if not nodes:
+            raise ValueError("Failed to create nodes from QA pair")
+        
+        # Connect to LanceDB and get the product-specific table
+        db = lancedb.connect(LANCEDB_FOLDERPATH)
+        table_name = f"{product}_QA_PAIRS"
+        
+        if table_name not in db.table_names():
+            utils.logger.error(f"QA pairs table {table_name} does not exist. Available tables: {db.table_names()}")
+            raise ValueError(f"QA pairs table {table_name} does not exist")
+        
+        # Open existing table and create vector store/index
+        table = db.open_table(table_name)
+        vector_store = LanceDBVectorStore.from_table(table)
+        index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+        
+        # Insert the new node(s) into the existing table
+        index.insert_nodes(nodes)
+        utils.logger.info(f"Added expert-verified QA pair to {table_name}: Q='{question[:100]}...' A='{answer[:50]}...'")
+        
+        # Recreate retrievers to include the new QA pair
+        create_qa_pairs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+        utils.logger.info(f"Updated retrievers for {table_name}")
+        
+        # Verify the insertion by checking row count
+        new_row_count = table.count_rows()
+        utils.logger.info(f"Table {table_name} now has {new_row_count} rows after adding expert QA pair")
+            
+    except Exception as e:
+        utils.logger.error(f"Failed to add expert QA pair to {product} LanceDB table: {e}", exc_info=True)
+        raise
+
 
 @app.post("/record_endorsement/", response_model=str, response_class=PlainTextResponse)
 async def record_endorsement(
