@@ -51,6 +51,11 @@ from llama_index.llms.openai import OpenAI as OpenAI_Llama
 from pydantic import Extra
 from speedict import Rdict
 
+os.environ["OTEL_SDK_DISABLED"] = "true"
+os.environ["OTEL_TRACES_EXPORTER"] = "none"
+os.environ["OTEL_METRICS_EXPORTER"] = "none"
+os.environ["OTEL_LOGS_EXPORTER"] = "none"
+
 import lancedb
 import pyarrow as pa
 from src import utils
@@ -1045,7 +1050,6 @@ async def add_expert_qa_pair(
         utils.logger.critical("Internal error in add_expert_qa_pair(). Error: %s", exc)
         raise HTTPException(status_code=500, detail="Internal error in add_expert_qa_pair()") from exc
 
-
 async def _add_qa_pair_to_lancedb(question: str, answer: str, product: str):
     """
     Helper function to add a single expert-verified QA pair to the existing LanceDB QA pairs table.
@@ -1516,35 +1520,41 @@ async def _run_rebuild_docs_task_traditional():
                                 doc.metadata.update(metadata)
                                 file_path = doc.metadata["file_path"]
                                 try:
-                                    # Get the repository URL base without the .git extension
-                                    repo_base = repo_url.replace(".git", "")
-                                    
-                                    # Convert file_path to a Path object for easier manipulation
-                                    path_obj = pathlib.Path(file_path)
-                                    
-                                    # Try to find the branch name in the path parts
-                                    path_parts = path_obj.parts
-                                    relative_path = None
-                                    
-                                    # Look for branch name in the path
-                                    if branch in path_parts:
-                                        branch_index = path_parts.index(branch)
-                                        # Get all parts after the branch
-                                        if branch_index + 1 < len(path_parts):
-                                            relative_path = pathlib.Path(*path_parts[branch_index+1:])
-                                    
-                                    # If we found a relative path after the branch
-                                    if relative_path:
-                                        github_url = f"{repo_base}/blob/{branch}/{relative_path}"
+                                    if "documentation-eoc" in repo_url:
+                                        if branch.startswith("v"):
+                                            version = branch.lstrip("v")
+                                            dev_base = f"https://developer.radiantlogic.com/eoc/v{version}"
+                                        else:
+                                            dev_base = f"https://developer.radiantlogic.com/eoc/{branch}"
+                                    elif product == "IDDM":
+                                        version = branch.lstrip("v")
+                                        dev_base = f"https://developer.radiantlogic.com/idm/v{version}"
                                     else:
-                                        # Fallback: just use the file name at the end of the path
-                                        github_url = f"{repo_base}/blob/{branch}/{path_obj.name}"
+                                        dev_base = f"https://developer.radiantlogic.com/ia/{branch}"
                                     
+                                    path_obj = pathlib.Path(file_path)
+                                    path_parts = list(path_obj.parts)
+                                    if branch in path_parts:
+                                        idx = path_parts.index(branch)
+                                        rel_parts = path_parts[idx+1:]
+                                    else:
+                                        rel_parts = [path_obj.name]
+                                    # Remove any "documentation" segment and strip ".md"
+                                    rel_parts = [p for p in rel_parts if p.lower() != "documentation"]
+                                    if rel_parts and rel_parts[-1].endswith(".md"):
+                                        rel_parts[-1] = rel_parts[-1][:-3]
+                                    # Remove README files
+                                    if rel_parts and rel_parts[-1].lower() == "readme":
+                                        rel_parts = rel_parts[:-1]
+                                    path_in_url = "/".join(rel_parts)
+                                    # Combine base and path
+                                    if path_in_url:
+                                        dev_url = f"{dev_base}/{path_in_url}"
+                                    else:
+                                        dev_url = dev_base
                                 except Exception as e:
-                                    utils.logger.warning(f"Background task: Failed to create proper GitHub URL for {file_path}: {e}")
-                                    github_url = f"{repo_base}/blob/{branch}"
-                                
-                                doc.metadata["github_url"] = github_url
+                                    utils.logger.warning(f"Background task: Failed to create developer portal URL for {file_path}: {e}")
+                                doc.metadata["github_url"] = dev_url
                             nodes = pipeline.run(documents=documents, in_place=False)
                             for node in nodes:
                                 node.excluded_llm_metadata_keys = excluded_metadata_keys
@@ -1766,29 +1776,41 @@ async def _run_rebuild_docs_task_contextual():
                                 doc.metadata.update(metadata)
                                 file_path = doc.metadata["file_path"]
                                 try:
-                                    # Get the repository URL base without the .git extension
-                                    repo_base = repo_url.replace(".git", "")
-                                    # Convert file_path to a Path object for easier manipulation
-                                    path_obj = pathlib.Path(file_path)
-                                    # Try to find the branch name in the path parts
-                                    path_parts = path_obj.parts
-                                    relative_path = None
-                                    # Look for branch name in the path
-                                    if branch in path_parts:
-                                        branch_index = path_parts.index(branch)
-                                        # Get all parts after the branch
-                                        if branch_index + 1 < len(path_parts):
-                                            relative_path = pathlib.Path(*path_parts[branch_index + 1 :])
-                                    # If we found a relative path after the branch
-                                    if relative_path:
-                                        github_url = f"{repo_base}/blob/{branch}/{relative_path}"
+                                    if "documentation-eoc" in repo_url:
+                                        if branch.startswith("v"):
+                                            version = branch.lstrip("v")
+                                            dev_base = f"https://developer.radiantlogic.com/eoc/v{version}"
+                                        else:
+                                            dev_base = f"https://developer.radiantlogic.com/eoc/{branch}"
+                                    elif product == "IDDM":
+                                        version = branch.lstrip("v")
+                                        dev_base = f"https://developer.radiantlogic.com/idm/v{version}"
                                     else:
-                                        # Fallback: just use the file name at the end of the path
-                                        github_url = f"{repo_base}/blob/{branch}/{path_obj.name}"
+                                        dev_base = f"https://developer.radiantlogic.com/ia/{branch}"
+                                    
+                                    path_obj = pathlib.Path(file_path)
+                                    path_parts = list(path_obj.parts)
+                                    if branch in path_parts:
+                                        idx = path_parts.index(branch)
+                                        rel_parts = path_parts[idx+1:]
+                                    else:
+                                        rel_parts = [path_obj.name]
+                                    # Remove any "documentation" segment and strip ".md"
+                                    rel_parts = [p for p in rel_parts if p.lower() != "documentation"]
+                                    if rel_parts and rel_parts[-1].endswith(".md"):
+                                        rel_parts[-1] = rel_parts[-1][:-3]
+                                    # Remove README
+                                    if rel_parts and rel_parts[-1].lower() == "readme":
+                                        rel_parts = rel_parts[:-1]
+                                    path_in_url = "/".join(rel_parts)
+                                    # Combine base and path
+                                    if path_in_url:
+                                        dev_url = f"{dev_base}/{path_in_url}"
+                                    else:
+                                        dev_url = dev_base
                                 except Exception as e:
-                                    utils.logger.warning(f"Background task: Failed to create proper GitHub URL for {file_path}: {e}")
-                                    github_url = f"{repo_base}/blob/{branch}"
-                                doc.metadata["github_url"] = github_url
+                                    utils.logger.warning(f"Background task: Failed to create developer portal URL for {file_path}: {e}") 
+                                doc.metadata["github_url"] = dev_url
 
                                 # Calculate token count
                                 token_count = len(enc.encode(doc.text))

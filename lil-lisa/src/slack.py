@@ -54,6 +54,103 @@ app = AsyncApp(token=SLACK_BOT_TOKEN)
 
 BOT_USER_ID: str = None
 RERANK_CACHE: Dict[str, List[Dict[str, str]]] = {}
+# Dictionary to track which message threads have already been endorsed or SOS'ed
+# Format: {conv_id: {"message_endorsed": True/False, "reaction_endorsed": "up"/"down"/False, "sos": True/False}}
+ENDORSEMENT_TRACKER: Dict[str, Dict[str, any]] = {}
+
+def get_last_bot_message(messages, current_ts, skip_text="Processing..."):
+    """
+    Helper function to find the last bot message before the current timestamp.
+    
+    Args:
+        messages: List of messages from conversations.replies
+        current_ts: Current message timestamp to find preceding message
+        skip_text: Text to skip when looking for bot messages
+    
+    Returns:
+        The last bot message dict or None if not found
+    """
+    # Convert timestamps to floats for comparison
+    current_ts_float = float(current_ts)
+    
+    # Filter and sort messages by timestamp
+    bot_messages = []
+    for msg in messages:
+        msg_ts = float(msg.get("ts", "0"))
+        if (msg_ts < current_ts_float and 
+            msg.get("bot_id") and 
+            msg.get("text", "").strip() != skip_text):
+            bot_messages.append(msg)
+    
+    # Return the most recent bot message
+    if bot_messages:
+        return max(bot_messages, key=lambda x: float(x.get("ts", "0")))
+    return None
+
+def is_expert_upvote(user_id, emoji, message_text, expert_user_id):
+    """
+    Helper function to check if this is an expert upvote on a non-chunk message.
+    
+    Args:
+        user_id: User who gave the reaction/emoji
+        emoji: The emoji (👍 or 👎)
+        message_text: Text of the message being endorsed
+        expert_user_id: The expert user ID for this channel
+    
+    Returns:
+        Boolean indicating if this is an expert upvote on a full answer
+    """
+    return (user_id == expert_user_id and 
+            emoji == "👍" and 
+            not message_text.startswith("*Chunk "))
+
+def parse_chunk_message(text):
+    """
+    Helper function to parse chunk message and extract index, content, and URL.
+    
+    Args:
+        text: The chunk message text starting with "*Chunk X*"
+    
+    Returns:
+        Tuple of (chunk_index, chunk_content, github_url)
+    """
+    # Extract chunk index from header (e.g., "*Chunk 3*" -> 2 for 0-based)
+    try:
+        chunk_header_end = text.find("*", 7) + 1
+        chunk_header = text[:chunk_header_end]
+        chunk_index = int(chunk_header.split()[1].rstrip("*")) - 1  # Convert to 0-based index
+    except (IndexError, ValueError):
+        chunk_index = 0
+    
+    # Extract chunk content (everything after the header)
+    chunk_content = text[chunk_header_end:].strip()
+    
+    # Split by newlines and find GitHub URL
+    lines = chunk_content.split('\n')
+    chunk_url = ""
+    github_line_index = -1
+    
+    # Look for GitHub URL and extract it (handle both formats)
+    for i, line in enumerate(lines):
+        line_stripped = line.strip()
+        if line_stripped.startswith("https://github.com") or line_stripped.startswith("<https://github.com"):
+            # Extract URL from markdown format <https://...> or plain format
+            if line_stripped.startswith("<") and line_stripped.endswith(">"):
+                chunk_url = line_stripped[1:-1]  # Remove < and >
+            else:
+                chunk_url = line_stripped
+            github_line_index = i
+            break
+    
+    # Extract chunk text (everything except the GitHub URL line)
+    if github_line_index >= 0:
+        # Remove the GitHub URL line from the chunk text
+        chunk_text_lines = lines[:github_line_index] + lines[github_line_index + 1:]
+        chunk_text = '\n'.join(chunk_text_lines).strip()
+    else:
+        chunk_text = chunk_content
+    
+    return chunk_index, chunk_text, chunk_url
 
 async def ensure_bot_id():
     """
@@ -107,18 +204,57 @@ def truncate_message_with_url(text: str, github_url: str = "", header: str = "")
     return message
 
 @app.event("message")
-async def handle_message_events(event, say):
+async def handle_message_events(event, say, client):
     """
     Handles Slack message events.
 
     This asynchronous function is an event handler for Slack "message" events. It processes the event based on
     the amount of people in a specific thread or whether the bot was tagged with an '@'.
+    It also handles emoji-only messages for endorsement.
 
     Args:
         event (dict): The Slack message event object.
         say (function): A function used to send messages in Slack.
+        client: The Slack client for API calls.
     """
-
+    
+    # IMPORTANT: Check for emoji-only endorsement messages first
+    text = event.get("text", "").strip()
+    
+    # Define emoji map for thumbs up/down
+    emoji_map = {
+        ":+1:": True,  # Thumbs up
+        ":-1:": False  # Thumbs down
+    }
+    
+    # Check if this is an SOS emoji message in a thread
+    if text == ":sos:" and "thread_ts" in event:
+        logger.info(f"[SOS] Processing SOS message in thread")
+        channel_id = event["channel"]
+        thread_ts = event.get("thread_ts")
+        
+        # Determine product and expert for this channel
+        product, expert_user_id = determine_product_and_expert(channel_id)
+        if not product or not expert_user_id:
+            logger.info(f"[SOS IGNORE] Unknown channel {channel_id}, skipping SOS message.")
+            return
+        
+        # Check if this thread has already had an SOS
+        if not check_and_update_endorsement(thread_ts, "sos"):
+            logger.info(f"[SOS DUPLICATE] Thread {thread_ts} already has an SOS request")
+            return
+            
+        await say(channel=channel_id, text=f"<@{expert_user_id}> Can you help?", thread_ts=thread_ts)
+        return
+    
+    # Check if this is an emoji-only message in a thread
+    if text in emoji_map and "thread_ts" in event:
+        logger.info(f"[EMOJI] Processing emoji message: {text}")
+        # Process emoji endorsement here
+        await process_emoji_endorsement(event, say, client, text, emoji_map[text])
+        return
+    
+    # If not an emoji endorsement, process as a regular message
     channel_id = event["channel"]
     thread_ts = event.get("thread_ts")
     message_ts = event.get("ts")
@@ -130,9 +266,142 @@ async def handle_message_events(event, say):
         if len(participants) >= 3:
             break
 
-    # ADD COMMENT HERE
+    # Process message if bot was mentioned OR thread has < 3 participants
     if LIL_LISA_SLACK_USERID in event["text"] or len(participants) < 3:
         await process_msg(event, say)
+
+
+async def process_emoji_endorsement(event, say, client, emoji_text, thumbs_up):
+    """
+    Process emoji-only messages (:+1:, :-1:) for endorsement.
+    
+    This function handles the emoji endorsement logic that was previously in the emoji_endorsement handler.
+    
+    Args:
+        event (dict): The Slack message event object.
+        say (function): A function used to send messages in Slack.
+        client: The Slack client for API calls.
+        emoji_text (str): The emoji text.
+        thumbs_up (bool): Whether this is a thumbs up (True) or thumbs down (False).
+    """
+    await ensure_bot_id()
+    
+    logger.info(f"[EMOJI DEBUG] Processing emoji endorsement with text: '{emoji_text}', thumbs_up={thumbs_up}")
+    
+    channel_id = event["channel"]
+    thread_ts = event["thread_ts"]
+    user_id = event["user"]
+    current_ts = event["ts"]
+    
+    # Determine product and expert for this channel
+    product, expert_user_id = determine_product_and_expert(channel_id)
+    if not product or not expert_user_id:
+        logger.info(f"[EMOJI IGNORE] Unknown channel {channel_id}, skipping emoji message.")
+        return
+
+    # Check if this thread has already been endorsed (message-based endorsement blocks everything)
+    if not check_and_update_endorsement(thread_ts, "endorsed", "message", thumbs_up):
+        logger.info(f"[EMOJI DUPLICATE] Thread {thread_ts} already endorsed, skipping.")
+        return
+
+    # Fetch all messages in the thread
+    try:
+        thread_resp = await client.conversations_replies(channel=channel_id, ts=thread_ts, limit=100)
+        thread_msgs = thread_resp.get("messages", [])
+        logger.info(f"[EMOJI DEBUG] Found {len(thread_msgs)} messages in thread")
+    except Exception as exc:
+        logger.error(f"[EMOJI ERROR] Failed to fetch thread messages: {exc}")
+        return
+
+    # Find the immediately preceding bot message (skip any "Processing...")
+    prev_msg = get_last_bot_message(thread_msgs, current_ts)
+    
+    if not prev_msg:
+        logger.info(f"[EMOJI] No valid bot message found before timestamp {current_ts}")
+        return
+
+
+    # Check if this is a chunk message - if so, allow all endorsements without duplication check
+    if prev_msg["text"].startswith("*Chunk "):
+        logger.info(f"[EMOJI CHUNK] This is a chunk message, allowing endorsement without duplication check")
+        # Reset the endorsement tracker for this thread since we want to allow chunk endorsements
+        if thread_ts in ENDORSEMENT_TRACKER:
+            ENDORSEMENT_TRACKER[thread_ts]["message_endorsed"] = False
+        
+        chunk_index, chunk_content, chunk_url = parse_chunk_message(prev_msg["text"])
+        
+        await record_endorsement(
+            conv_id=thread_ts,
+            is_expert=(user_id == expert_user_id),
+            thumbs_up=thumbs_up,
+            endorsement_type="chunks",
+            chunk_index=chunk_index,
+            chunk_text=chunk_content,
+            chunk_url=chunk_url
+        )
+        logger.info(f"[EMOJI CHUNK] Recorded chunk endorsement for chunk {chunk_index + 1}")
+        return
+
+    # For non-chunk messages, continue with the normal logic
+    # Check if the reactor is an expert
+    is_expert = (user_id == expert_user_id)
+    emoji = "👍" if thumbs_up else "👎"  # Normalize to Unicode for helper functions
+    
+    # Get conversation ID for endorsement recording
+    conv_id = thread_ts
+
+    # Expert upvote on non-chunk message - add to golden QA pairs
+    expert_upvote = False
+    if is_expert_upvote(user_id, emoji, prev_msg["text"], expert_user_id):
+        logger.info(f"[EMOJI EXPERT THUMBS UP] Expert {expert_user_id} gave thumbs up via emoji to message {prev_msg['ts']}")
+        await add_expert_verified_qa_pair(prev_msg["ts"], channel_id, expert_user_id)
+        expert_upvote = True
+
+    # Regular bot response endorsement
+    logger.info(f"[EMOJI DEBUG] Recording regular endorsement with thumbs_up={thumbs_up}")
+    
+    # Log special case for expert upvote
+    if expert_upvote:
+        logger.info(f"[EMOJI EXPERT UPVOTE] Also recording endorsement for expert upvote")
+        
+    await record_endorsement(
+        conv_id=conv_id,
+        is_expert=is_expert,
+        thumbs_up=thumbs_up,
+        endorsement_type="response"
+    )
+    
+    if thumbs_up:
+        await say(channel=channel_id, text="Thank you for your feedback!", thread_ts=thread_ts)
+        return
+    else:
+        # On thumbs down, look up reranked cache and post alternative chunks
+        reranked = RERANK_CACHE.get(prev_msg["ts"], [])
+        if reranked:
+            logger.info(f"[EMOJI THUMBS DOWN] Posting {len(reranked)} alternative chunks via emoji")
+            # Post each node as a separate message in the thread
+            for idx, node in enumerate(reranked, start=1):
+                chunk_text = node.get("text", "").strip()
+                if not chunk_text:
+                    continue
+
+                metadata = node.get("metadata", {})
+                github_url = metadata.get("github_url", "").strip()
+                header = f"*Chunk {idx}*\n"
+                message = truncate_message_with_url(chunk_text, github_url, header)
+
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=thread_ts,
+                    text=message
+                )
+            
+            # Clear cache entry
+            del RERANK_CACHE[prev_msg["ts"]]
+        else:
+            logger.info(f"[EMOJI THUMBS DOWN] No reranked nodes found for message {prev_msg['ts']}")
+            # Add a response for thumbs down even when no alternatives found
+            await say(channel=channel_id, text="Thank you for your feedback. We'll work to improve our responses.", thread_ts=thread_ts)
 
 
 async def get_ans(query, thread_id, msg_id, product, is_expert_answering):
@@ -436,22 +705,30 @@ async def reaction(event, say):
 
     # Handle SOS reactions
     if event["reaction"].startswith("sos"):
+        # Check if this thread already had an SOS
+        if not check_and_update_endorsement(conv_id, "sos"):
+            logger.info(f"[SOS DUPLICATE] Thread {conv_id} already has an SOS request")
+            return
+            
         _ = await say(channel=channel_id, text=f"<@{expert_user_id}> Can you help?", thread_ts=conv_id)
+        return
+
+    # Check if this thread has already been endorsed (reactions allow changing thumbs up/down)
+    if not check_and_update_endorsement(conv_id, "endorsed", "reaction", thumbs_up):
+        logger.info(f"[REACTION DUPLICATE] Thread {conv_id} already endorsed, skipping.")
         return
 
     # 2) If expert gives thumbs up to ANY message (except chunks), add to golden QA pairs
     if thumbs_up is True and is_expert:
         # Get the message text to check if this is a chunk message
-        resp = await app.client.conversations_replies(ts=item_ts, channel=channel_id)
-        reacted_message = resp["messages"][0]
-        message_text = reacted_message.get("text", "")
+        message_text = first_msg.get("text", "")
         
-        # Skip golden QA pair addition for chunk messages
-        if message_text.startswith("*Chunk ") and "*" in message_text[7:]:
-            logger.info(f"[EXPERT THUMBS UP CHUNK] Expert {expert_user_id} gave thumbs up to chunk {item_ts} - skipping golden QA pair addition")
-        else:
+        # Use helper function to check if this is an expert upvote on a non-chunk
+        if is_expert_upvote(reactor_user_id, "👍", message_text, expert_user_id):
             logger.info(f"[EXPERT THUMBS UP] Expert {expert_user_id} gave thumbs up to message {item_ts}")
             await add_expert_verified_qa_pair(item_ts, channel_id, expert_user_id)
+        else:
+            logger.info(f"[EXPERT THUMBS UP CHUNK] Expert {expert_user_id} gave thumbs up to chunk {item_ts} - skipping golden QA pair addition")
 
     # 3) Handle bot-specific message reactions (for endorsement recording and chunk display)
     if item_user == BOT_USER_ID:
@@ -459,44 +736,14 @@ async def reaction(event, say):
         message_text = first_msg.get("text", "")
         
         # 4) Check if this is a chunk message (starts with "*Chunk X*")
-        if message_text.startswith("*Chunk ") and "*" in message_text[7:]:
-            # This is a chunk message - extract chunk information
-            chunk_header_end = message_text.find("*", 7) + 1
-            chunk_header = message_text[:chunk_header_end]
+        if message_text.startswith("*Chunk "):
+            logger.info(f"[REACTION CHUNK] This is a chunk message, allowing reaction without duplication check")
+            # Reset the endorsement tracker for this thread since we want to allow chunk endorsements
+            if conv_id in ENDORSEMENT_TRACKER:
+                ENDORSEMENT_TRACKER[conv_id]["reaction_endorsed"] = False
             
-            # Extract chunk index from header (e.g., "*Chunk 3*" -> 3)
-            try:
-                chunk_index = int(chunk_header.split()[1].rstrip("*")) - 1  # Convert to 0-based index
-            except (IndexError, ValueError):
-                chunk_index = 0
-                
-            # Extract chunk text (everything after the header)
-            chunk_content = message_text[chunk_header_end:].strip()
-            
-            # Split by newlines and find GitHub URL
-            lines = chunk_content.split('\n')
-            chunk_url = ""
-            github_line_index = -1
-            
-            # Look for GitHub URL and extract it (handle both formats)
-            for i, line in enumerate(lines):
-                line_stripped = line.strip()
-                if line_stripped.startswith("https://github.com") or line_stripped.startswith("<https://github.com"):
-                    # Extract URL from markdown format <https://...> or plain format
-                    if line_stripped.startswith("<") and line_stripped.endswith(">"):
-                        chunk_url = line_stripped[1:-1]  # Remove < and >
-                    else:
-                        chunk_url = line_stripped
-                    github_line_index = i
-                    break
-            
-            # Extract chunk text (everything except the GitHub URL line)
-            if github_line_index >= 0:
-                # Remove the GitHub URL line from the chunk text
-                chunk_text_lines = lines[:github_line_index] + lines[github_line_index + 1:]
-                chunk_text = '\n'.join(chunk_text_lines).strip()
-            else:
-                chunk_text = chunk_content
+            # Use helper function to parse chunk information
+            chunk_index, chunk_text, chunk_url = parse_chunk_message(message_text)
 
             # Record chunk-specific endorsement
             await record_endorsement(
@@ -609,6 +856,63 @@ def determine_product_and_expert(channel_id):
         expert_user_id = None
 
     return product, expert_user_id
+
+def check_and_update_endorsement(conv_id, action_type="endorsed", endorsement_source="message", thumbs_up=None):
+    """
+    Check if a conversation has already been endorsed or SOS'ed and update the tracker.
+    
+    Args:
+        conv_id (str): The conversation ID (thread_ts) to check
+        action_type (str): The action type, either "endorsed" or "sos"
+        endorsement_source (str): Either "message" or "reaction" 
+        thumbs_up (bool): For reactions, whether this is thumbs up (True) or thumbs down (False)
+        
+    Returns:
+        bool: True if this endorsement should be processed, False if it should be skipped
+    """
+    # Initialize the tracking entry if it doesn't exist
+    if conv_id not in ENDORSEMENT_TRACKER:
+        ENDORSEMENT_TRACKER[conv_id] = {"message_endorsed": False, "reaction_endorsed": False, "sos": False}
+    
+    if action_type == "sos":
+        if ENDORSEMENT_TRACKER[conv_id]["sos"]:
+            logger.info(f"[DUPLICATE SOS] Conv {conv_id} already has SOS")
+            return False
+        ENDORSEMENT_TRACKER[conv_id]["sos"] = True
+        logger.info(f"[NEW SOS] Marking conv {conv_id} as SOS")
+        return True
+    
+    elif action_type == "endorsed":
+        if endorsement_source == "message":
+            # For messages: block if ANY endorsement exists (message or reaction)
+            if ENDORSEMENT_TRACKER[conv_id]["message_endorsed"] or ENDORSEMENT_TRACKER[conv_id]["reaction_endorsed"]:
+                logger.info(f"[DUPLICATE MESSAGE] Conv {conv_id} already endorsed via message or reaction")
+                return False
+            ENDORSEMENT_TRACKER[conv_id]["message_endorsed"] = True
+            logger.info(f"[NEW MESSAGE ENDORSEMENT] Marking conv {conv_id} as message endorsed")
+            return True
+            
+        elif endorsement_source == "reaction":
+            # For reactions: block if message endorsement exists, but allow changing reaction type
+            if ENDORSEMENT_TRACKER[conv_id]["message_endorsed"]:
+                logger.info(f"[DUPLICATE REACTION] Conv {conv_id} already endorsed via message")
+                return False
+            
+            # Get current reaction state
+            current_reaction = ENDORSEMENT_TRACKER[conv_id]["reaction_endorsed"]
+            new_reaction = "up" if thumbs_up else "down"
+            
+            # If no reaction yet, or changing reaction type, allow it
+            if not current_reaction or current_reaction != new_reaction:
+                ENDORSEMENT_TRACKER[conv_id]["reaction_endorsed"] = new_reaction
+                logger.info(f"[NEW/CHANGED REACTION] Marking conv {conv_id} as reaction endorsed: {new_reaction}")
+                return True
+            else:
+                # Same reaction type as before, skip
+                logger.info(f"[DUPLICATE REACTION] Conv {conv_id} already has same reaction: {new_reaction}")
+                return False
+    
+    return False
 
 
 @app.command("/get_golden_qa_pairs")
