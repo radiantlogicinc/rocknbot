@@ -51,11 +51,6 @@ from llama_index.llms.openai import OpenAI as OpenAI_Llama
 from pydantic import Extra
 from speedict import Rdict
 
-os.environ["OTEL_SDK_DISABLED"] = "true"
-os.environ["OTEL_TRACES_EXPORTER"] = "none"
-os.environ["OTEL_METRICS_EXPORTER"] = "none"
-os.environ["OTEL_LOGS_EXPORTER"] = "none"
-
 import lancedb
 import pyarrow as pa
 from src import utils
