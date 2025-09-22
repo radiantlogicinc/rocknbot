@@ -51,6 +51,12 @@ from llama_index.llms.openai import OpenAI as OpenAI_Llama
 from pydantic import Extra
 from speedict import Rdict
 
+os.environ["OTEL_SDK_DISABLED"] = "true"
+os.environ["OTEL_TRACES_EXPORTER"] = "none"
+os.environ["OTEL_METRICS_EXPORTER"] = "none"
+os.environ["OTEL_LOGS_EXPORTER"] = "none"
+
+
 import lancedb
 import pyarrow as pa
 from src import utils
@@ -1545,11 +1551,12 @@ async def _run_rebuild_docs_task_traditional():
                                         rel_parts = rel_parts[:-1]
                                     path_in_url = "/".join(rel_parts)
                                     dev_url = f"{dev_base}/{path_in_url}" if path_in_url else dev_base
+                                
+                                    # Set webportal_url as the main URL for document retrieval
+                                    doc.metadata["webportal_url"] = dev_url
+
                                 except Exception as e:
                                     utils.logger.warning(f"Background task: Failed to create developer portal URL for {file_path}: {e}")
-                                
-                                # Set webportal_url as the main URL for document retrieval
-                                doc.metadata["webportal_url"] = dev_url
                                 
                                 # Create GitHub URL for reference
                                 try:
@@ -1832,12 +1839,12 @@ async def _run_rebuild_docs_task_contextual():
                                         rel_parts = rel_parts[:-1]
                                     path_in_url = "/".join(rel_parts)
                                     dev_url = f"{dev_base}/{path_in_url}" if path_in_url else dev_base
+
+                                    # Set webportal_url as the main URL for document retrieval
+                                    doc.metadata["webportal_url"] = dev_url
                                 except Exception as e:
                                     utils.logger.warning(f"Background task: Failed to create developer portal URL for {file_path}: {e}") 
-                                
-                                # Set webportal_url as the main URL for document retrieval
-                                doc.metadata["webportal_url"] = dev_url
-                                
+                                                                
                                 # Create GitHub URL for reference
                                 try:
                                     # Get the repository URL base without the .git extension

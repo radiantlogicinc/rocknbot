@@ -223,8 +223,10 @@ async def handle_message_events(event, say, client):
     
     # Define emoji map for thumbs up/down
     emoji_map = {
-        ":+1:": True,  # Thumbs up
-        ":-1:": False  # Thumbs down
+        ":+1:": True,      # Slack thumbs up
+        "👍": True,        # Unicode thumbs up
+        ":-1:": False,     # Slack thumbs down
+        "👎": False        # Unicode thumbs down
     }
     
     # Check if this is an SOS emoji message in a thread
