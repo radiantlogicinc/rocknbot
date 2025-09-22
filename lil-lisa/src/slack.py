@@ -12,7 +12,7 @@ from typing import Optional
 import jwt
 
 
-from typing import Dict, List
+from typing import Dict, List, Any
 import json
 
 import requests
@@ -56,7 +56,7 @@ BOT_USER_ID: str = None
 RERANK_CACHE: Dict[str, List[Dict[str, str]]] = {}
 # Dictionary to track which message threads have already been endorsed or SOS'ed
 # Format: {conv_id: {"message_endorsed": True/False, "reaction_endorsed": "up"/"down"/False, "sos": True/False}}
-ENDORSEMENT_TRACKER: Dict[str, Dict[str, any]] = {}
+ENDORSEMENT_TRACKER: Dict[str, Dict[str, Any]] = {}
 
 def get_last_bot_message(messages, current_ts, skip_text="Processing..."):
     """
@@ -112,7 +112,7 @@ def parse_chunk_message(text):
         text: The chunk message text starting with "*Chunk X*"
     
     Returns:
-        Tuple of (chunk_index, chunk_content, github_url)
+        Tuple of (chunk_index, chunk_content, webportal_url)
     """
     # Extract chunk index from header (e.g., "*Chunk 3*" -> 2 for 0-based)
     try:
@@ -128,24 +128,24 @@ def parse_chunk_message(text):
     # Split by newlines and find GitHub URL
     lines = chunk_content.split('\n')
     chunk_url = ""
-    github_line_index = -1
-    
-    # Look for GitHub URL and extract it (handle both formats)
+    webportal_line_index = -1
+
+    # Look for webportal URL and extract it (handle both formats)
     for i, line in enumerate(lines):
         line_stripped = line.strip()
-        if line_stripped.startswith("https://github.com") or line_stripped.startswith("<https://github.com"):
+        if line_stripped.startswith("https://developer.radiantlogic.com") or line_stripped.startswith("<https://developer.radiantlogic.com"):
             # Extract URL from markdown format <https://...> or plain format
             if line_stripped.startswith("<") and line_stripped.endswith(">"):
                 chunk_url = line_stripped[1:-1]  # Remove < and >
             else:
                 chunk_url = line_stripped
-            github_line_index = i
+            webportal_line_index = i
             break
-    
-    # Extract chunk text (everything except the GitHub URL line)
-    if github_line_index >= 0:
-        # Remove the GitHub URL line from the chunk text
-        chunk_text_lines = lines[:github_line_index] + lines[github_line_index + 1:]
+
+    # Extract chunk text (everything except the webportal URL line)
+    if webportal_line_index >= 0:
+        # Remove the webportal URL line from the chunk text
+        chunk_text_lines = lines[:webportal_line_index] + lines[webportal_line_index + 1:]
         chunk_text = '\n'.join(chunk_text_lines).strip()
     else:
         chunk_text = chunk_content
@@ -162,20 +162,20 @@ async def ensure_bot_id():
         BOT_USER_ID = auth.get("user_id")
         logger.info(f"[BOT_ID SET] BOT_USER_ID = {BOT_USER_ID}")
 
-def truncate_message_with_url(text: str, github_url: str = "", header: str = "") -> str:
+def truncate_message_with_url(text: str, webportal_url: str = "", header: str = "") -> str:
     """
-    Truncate message text to fit within MAX_LENGTH while preserving GitHub URL.
+    Truncate message text to fit within MAX_LENGTH while preserving WebPortal URL.
     
     Args:
         text: The main text content to potentially truncate
-        github_url: The GitHub URL that must be preserved
+        webportal_url: The WebPortal URL that must be preserved
         header: Any header text (like "Chunk X")
     
     Returns:
         Formatted message that fits within the length limit
     """
     # Calculate the components that must be preserved
-    url_part = f"\n{github_url}" if github_url else ""
+    url_part = f"\n{webportal_url}" if webportal_url else ""
     ellipsis = "..."
     
     # Calculate total fixed length (header + URL + ellipsis + newlines)
@@ -196,7 +196,7 @@ def truncate_message_with_url(text: str, github_url: str = "", header: str = "")
         truncated_text = text
     
     # Construct final message
-    if github_url:
+    if webportal_url:
         message = f"{header}{truncated_text}{url_part}"
     else:
         message = f"{header}{truncated_text}"
@@ -386,9 +386,9 @@ async def process_emoji_endorsement(event, say, client, emoji_text, thumbs_up):
                     continue
 
                 metadata = node.get("metadata", {})
-                github_url = metadata.get("github_url", "").strip()
+                webportal_url = metadata.get("webportal_url", "").strip()
                 header = f"*Chunk {idx}*\n"
-                message = truncate_message_with_url(chunk_text, github_url, header)
+                message = truncate_message_with_url(chunk_text, webportal_url, header)
 
                 await client.chat_postMessage(
                     channel=channel_id,
@@ -788,13 +788,13 @@ async def reaction(event, say):
                 if not chunk_text:
                     continue
 
-                # 2) Pull out only the GitHub URL from metadata (if any)
+                # 2) Pull out only the WebPortal URL from metadata (if any)
                 metadata = node.get("metadata", {})
-                github_url = metadata.get("github_url", "").strip()
+                webportal_url = metadata.get("webportal_url", "").strip()
 
                 # 3) Create header and use the new truncation function
                 header = f"*Chunk {idx}*\n"
-                message = truncate_message_with_url(chunk_text, github_url, header)
+                message = truncate_message_with_url(chunk_text, webportal_url, header)
 
                 # 4) Post that single, concise message to the same thread
                 logger.info(f"[POST NODE {idx}] thread={parent_thread}, message_length={len(message)}")
@@ -874,23 +874,18 @@ def check_and_update_endorsement(conv_id, action_type="endorsed", endorsement_so
     if conv_id not in ENDORSEMENT_TRACKER:
         ENDORSEMENT_TRACKER[conv_id] = {"message_endorsed": False, "reaction_endorsed": False, "sos": False}
     
+    # Handle SOS action
     if action_type == "sos":
-        if ENDORSEMENT_TRACKER[conv_id]["sos"]:
-            logger.info(f"[DUPLICATE SOS] Conv {conv_id} already has SOS")
-            return False
-        ENDORSEMENT_TRACKER[conv_id]["sos"] = True
-        logger.info(f"[NEW SOS] Marking conv {conv_id} as SOS")
-        return True
+        return update_tracker_entry(conv_id, "sos", True)
     
+    # Handle endorsement actions
     elif action_type == "endorsed":
         if endorsement_source == "message":
             # For messages: block if ANY endorsement exists (message or reaction)
             if ENDORSEMENT_TRACKER[conv_id]["message_endorsed"] or ENDORSEMENT_TRACKER[conv_id]["reaction_endorsed"]:
                 logger.info(f"[DUPLICATE MESSAGE] Conv {conv_id} already endorsed via message or reaction")
                 return False
-            ENDORSEMENT_TRACKER[conv_id]["message_endorsed"] = True
-            logger.info(f"[NEW MESSAGE ENDORSEMENT] Marking conv {conv_id} as message endorsed")
-            return True
+            return update_tracker_entry(conv_id, "message_endorsed", True)
             
         elif endorsement_source == "reaction":
             # For reactions: block if message endorsement exists, but allow changing reaction type
@@ -904,15 +899,44 @@ def check_and_update_endorsement(conv_id, action_type="endorsed", endorsement_so
             
             # If no reaction yet, or changing reaction type, allow it
             if not current_reaction or current_reaction != new_reaction:
-                ENDORSEMENT_TRACKER[conv_id]["reaction_endorsed"] = new_reaction
-                logger.info(f"[NEW/CHANGED REACTION] Marking conv {conv_id} as reaction endorsed: {new_reaction}")
-                return True
+                return update_tracker_entry(conv_id, "reaction_endorsed", new_reaction)
             else:
                 # Same reaction type as before, skip
                 logger.info(f"[DUPLICATE REACTION] Conv {conv_id} already has same reaction: {new_reaction}")
                 return False
     
     return False
+
+def update_tracker_entry(conv_id, field, value):
+    """
+    Update a specific field in the endorsement tracker and log the change.
+    
+    Args:
+        conv_id (str): The conversation ID to update
+        field (str): The field to update ('sos', 'message_endorsed', or 'reaction_endorsed')
+        value: The value to set (True/False or 'up'/'down' for reactions)
+        
+    Returns:
+        bool: True if the field was updated, False if it was already set to the specified value
+    """
+    # Check if value already matches (no change needed)
+    if ENDORSEMENT_TRACKER[conv_id][field] == value:
+        action_type = field.replace("_endorsed", "").upper()
+        logger.info(f"[DUPLICATE {action_type}] Conv {conv_id} already has {field}={value}")
+        return False
+    
+    # Update the field with the new value
+    ENDORSEMENT_TRACKER[conv_id][field] = value
+    
+    # Log the update based on field type
+    if field == "sos":
+        logger.info(f"[NEW SOS] Marking conv {conv_id} as SOS")
+    elif field == "message_endorsed":
+        logger.info(f"[NEW MESSAGE ENDORSEMENT] Marking conv {conv_id} as message endorsed")
+    elif field == "reaction_endorsed":
+        logger.info(f"[NEW/CHANGED REACTION] Marking conv {conv_id} as reaction endorsed: {value}")
+    
+    return True
 
 
 @app.command("/get_golden_qa_pairs")

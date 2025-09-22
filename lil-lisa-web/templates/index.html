@@ -705,11 +705,12 @@
                         // Create main content for the node
                         nodeDiv.innerHTML = `<strong>Source ${index + 1}</strong>: ${nodeText}`;
 
-                        // Add GitHub URL if available in metadata
-                        if (node.metadata && node.metadata.github_url) {
+                        // Add WebPortal URL if available in metadata, falling back to GitHub URL if needed
+                        if (node.metadata && (node.metadata.webportal_url || node.metadata.github_url)) {
                             const urlDiv = document.createElement('div');
                             urlDiv.classList.add('source-url');
-                            urlDiv.innerHTML = `<a href="${node.metadata.github_url}" target="_blank">Source Documentation</a>`;
+                            const docUrl = node.metadata.webportal_url || node.metadata.github_url;
+                            urlDiv.innerHTML = `<a href="${docUrl}" target="_blank">Source Documentation</a>`;
                             nodeDiv.appendChild(urlDiv);
                         }
 
@@ -1165,7 +1166,7 @@
         //     <strong>Source ${index + 1}:</strong>
         //     <div>${text}</div>
         //     ${node.metadata ? `
-        //         <div>GitHub URL: <a href="${node.metadata.github_url || '#'}" target="_blank">${node.metadata.github_url || 'N/A'}</a></div>
+        //         <div>WebPortal URL: <a href="${node.metadata.webportal_url || '#'}" target="_blank">${node.metadata.webportal_url || 'N/A'}</a></div>
         //     ` : ''}
         // `;
 
@@ -1193,16 +1194,16 @@
                 const nodeDiv = document.createElement('div');
                 nodeDiv.className = "source-node";
 
-                // Get the text and github_url
+                // Get the text and webportal_url
                 const nodeText = node.text;
-                const githubUrl = node.metadata && node.metadata.github_url ? node.metadata.github_url : '#';
-
+                const webportalUrl = node.metadata && node.metadata.webportal_url ? node.metadata.webportal_url :
+                    (node.metadata && node.metadata.github_url ? node.metadata.github_url : '#');
                 // Create the node content
                 nodeDiv.innerHTML = `
                 <strong>Source ${index + 1}:</strong>
                 <div>${nodeText}</div>
                 <div class="source-url">
-                    <a href="${githubUrl}" target="_blank">Source Documentation</a>
+                    <a href="${webportalUrl}" target="_blank">Source Documentation</a>
                 </div>
             `;
 
@@ -1229,7 +1230,7 @@
                     feedbackDiv.classList.add("locked");
                     upBtn.disabled = true;
                     downBtn.disabled = true;
-                    submitChunkFeedback(index, nodeText, githubUrl, true);
+                    submitChunkFeedback(index, nodeText, webportalUrl, true);
                     showFeedbackPopup("Thank you for rating this source!");
                 });
 
@@ -1238,7 +1239,7 @@
                     feedbackDiv.classList.add("locked");
                     downBtn.disabled = true;
                     upBtn.disabled = true;
-                    submitChunkFeedback(index, nodeText, githubUrl, false);
+                    submitChunkFeedback(index, nodeText, webportalUrl, false);
                     showFeedbackPopup("Thank you for rating this source!");
                 });
 
