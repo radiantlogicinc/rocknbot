@@ -2,29 +2,23 @@
 
 ## Important Notes for This Release
 
-### Deployment
+### Changed version
 
-Deploy all three applications:
+- lil-lisa - from 2.2.4 to 2.3.0
+- lillisa_server - from 2.5.2 to 2.6.0
+- lil-lisa-web - from 2.3.4 to 2.4.0
 
-- lil-lisa
-- lillisa_server
-- lil-lisa-web
-
-### Post-Deployment Steps
-
-- Rebuild the document store using one of the following commands:
-  - `/rebuild_docs_contextual`
-  - `/rebuild_docs_traditional`
+- LDB_TAG Changed from 2.5.3 to 2.6.0 (Is this necessary?)
 
 ### Testing
-- After rebuilding is complete, run a query and verify that the citations are from the developer portal, not GitHub.
-- **Note**: This may take some time.
+- After rebuilding is complete (Roughly one hour), run a query and verify that the citations are from the developer portal, not GitHub.
+- **Note**: There is no notification when the rebuild is complete.
 
 ## Standard Deployment Process
 
 ### Deployment
 
-Deploy all three applications:
+Deploy only those applications where the version has changed:
 
 - lil-lisa
 - lillisa_server
@@ -32,9 +26,9 @@ Deploy all three applications:
 
 ### Post-Deployment Steps
 
-1. Verify that the new deployment is compatible with the existing document store.
-2. Run one of the following Slack slash commands to rebuild the document store:
-   - `/rebuild_docs_contextual`
-   - `/rebuild_docs_traditional`
-3. Note: Rebuilding the document store with the selected chunking strategy may take some time.
-4. After rebuilding, test a query to confirm that the new chunking strategy is working as expected.
+- Rebuild the document store using the following commands on slack lil-lisa admin channel:
+  - `/rebuild_docs_contextual`
+
+### Testing
+- After rebuilding is complete (Roughly one hour), run a query and verify the response.
+- **Note**: There is no notification when the rebuild is complete.
