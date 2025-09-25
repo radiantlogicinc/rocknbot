@@ -1045,7 +1045,6 @@ async def add_expert_qa_pair(
         utils.logger.critical("Internal error in add_expert_qa_pair(). Error: %s", exc)
         raise HTTPException(status_code=500, detail="Internal error in add_expert_qa_pair()") from exc
 
-
 async def _add_qa_pair_to_lancedb(question: str, answer: str, product: str):
     """
     Helper function to add a single expert-verified QA pair to the existing LanceDB QA pairs table.
@@ -1140,7 +1139,7 @@ async def record_endorsement(
         query_id (str, optional): The query ID to associate the endorsement with.
         chunk_index (int, optional): Index of the specific source chunk being rated (0-based).
         chunk_text (str, optional): Text of the specific chunk being rated.
-        chunk_url (str, optional): GitHub URL of the specific chunk being rated.
+        chunk_url (str, optional): Webportal URL of the specific chunk being rated.
         chunk_data (dict, optional): Alternative way to provide chunk_text and chunk_url in request body.
 
     Returns:
@@ -1187,9 +1186,9 @@ async def record_endorsement(
                 "query_id": current_query_id,
                 "query": user_query_message,
                 "chunk": chunk_text,
-                "github_url": chunk_url,
+                "webportal_url": chunk_url,  # Use webportal_url as primary URL
                 "thumbs_up": thumbs_up_log_value,
-                "feedback_src": feedback_src,  # Fixed here
+                "feedback_src": feedback_src,
                 "chunk_index": chunk_index
             }
             utils.logger.info(f"Document Chunk: {json.dumps(chunk_log)}")
@@ -1201,13 +1200,14 @@ async def record_endorsement(
             artifacts = llsc.query_artifacts.get(current_query_id, {})
             reranked_nodes = artifacts.get("reranked_nodes", [])
 
-        # Simplify the reranked_nodes to only include text and github_url
+        # Simplify the reranked_nodes to only include text and URLs
         simplified_nodes = []
         for node in reranked_nodes:
+            node_metadata = node.get("metadata", {})
             simplified_node = {
                 "text": node.get("text", ""),
                 "metadata": {
-                    "github_url": node.get("metadata", {}).get("github_url", "")
+                    "webportal_url": node_metadata.get("webportal_url", "")
                 }
             }
             simplified_nodes.append(simplified_node)
@@ -1465,6 +1465,7 @@ async def _run_rebuild_docs_task_traditional():
             "last_modified_date",
             "version",
             "github_url",
+            "webportal_url",
         ]
 
         db = lancedb.connect(LANCEDB_FOLDERPATH)
@@ -1516,6 +1517,43 @@ async def _run_rebuild_docs_task_traditional():
                                 doc.metadata.update(metadata)
                                 file_path = doc.metadata["file_path"]
                                 try:
+                                    if "documentation-eoc" in repo_url:
+                                        if branch.startswith("v"):
+                                            version = branch.lstrip("v")
+                                            dev_base = f"https://developer.radiantlogic.com/eoc/v{version}"
+                                        else:
+                                            dev_base = f"https://developer.radiantlogic.com/eoc/{branch}"
+                                    elif product == "IDDM":
+                                        version = branch.lstrip("v")
+                                        dev_base = f"https://developer.radiantlogic.com/idm/v{version}"
+                                    else:
+                                        dev_base = f"https://developer.radiantlogic.com/ia/{branch}"
+                                    
+                                    path_obj = pathlib.Path(file_path)
+                                    path_parts = list(path_obj.parts)
+                                    if branch in path_parts:
+                                        idx = path_parts.index(branch)
+                                        rel_parts = path_parts[idx+1:]
+                                    else:
+                                        rel_parts = [path_obj.name]
+                                    # Remove any "documentation" segment and strip ".md"
+                                    rel_parts = [p for p in rel_parts if p.lower() != "documentation"]
+                                    if rel_parts and rel_parts[-1].endswith(".md"):
+                                        rel_parts[-1] = rel_parts[-1][:-3]
+                                    # Remove README files
+                                    if rel_parts and rel_parts[-1].lower() == "readme":
+                                        rel_parts = rel_parts[:-1]
+                                    path_in_url = "/".join(rel_parts)
+                                    dev_url = f"{dev_base}/{path_in_url}" if path_in_url else dev_base
+                                
+                                    # Set webportal_url as the main URL for document retrieval
+                                    doc.metadata["webportal_url"] = dev_url
+
+                                except Exception as e:
+                                    utils.logger.warning(f"Background task: Failed to create developer portal URL for {file_path}: {e}")
+                                
+                                # Create GitHub URL for reference
+                                try:
                                     # Get the repository URL base without the .git extension
                                     repo_base = repo_url.replace(".git", "")
                                     
@@ -1540,11 +1578,11 @@ async def _run_rebuild_docs_task_traditional():
                                         # Fallback: just use the file name at the end of the path
                                         github_url = f"{repo_base}/blob/{branch}/{path_obj.name}"
                                     
+                                    # Store the GitHub URL for reference only
+                                    doc.metadata["github_url"] = github_url
                                 except Exception as e:
                                     utils.logger.warning(f"Background task: Failed to create proper GitHub URL for {file_path}: {e}")
-                                    github_url = f"{repo_base}/blob/{branch}"
-                                
-                                doc.metadata["github_url"] = github_url
+                                    doc.metadata["github_url"] = f"{repo_base}/blob/{branch}"
                             nodes = pipeline.run(documents=documents, in_place=False)
                             for node in nodes:
                                 node.excluded_llm_metadata_keys = excluded_metadata_keys
@@ -1706,6 +1744,7 @@ async def _run_rebuild_docs_task_contextual():
             "last_modified_date",
             "version",
             "github_url",
+            "webportal_url",
         ]
 
         db = lancedb.connect(LANCEDB_FOLDERPATH)
@@ -1766,29 +1805,71 @@ async def _run_rebuild_docs_task_contextual():
                                 doc.metadata.update(metadata)
                                 file_path = doc.metadata["file_path"]
                                 try:
+                                    if "documentation-eoc" in repo_url:
+                                        if branch.startswith("v"):
+                                            version = branch.lstrip("v")
+                                            dev_base = f"https://developer.radiantlogic.com/eoc/v{version}"
+                                        else:
+                                            dev_base = f"https://developer.radiantlogic.com/eoc/{branch}"
+                                    elif product == "IDDM":
+                                        version = branch.lstrip("v")
+                                        dev_base = f"https://developer.radiantlogic.com/idm/v{version}"
+                                    else:
+                                        dev_base = f"https://developer.radiantlogic.com/ia/{branch}"
+                                    
+                                    path_obj = pathlib.Path(file_path)
+                                    path_parts = list(path_obj.parts)
+                                    if branch in path_parts:
+                                        idx = path_parts.index(branch)
+                                        rel_parts = path_parts[idx+1:]
+                                    else:
+                                        rel_parts = [path_obj.name]
+                                    # Remove any "documentation" segment and strip ".md"
+                                    rel_parts = [p for p in rel_parts if p.lower() != "documentation"]
+                                    if rel_parts and rel_parts[-1].endswith(".md"):
+                                        rel_parts[-1] = rel_parts[-1][:-3]
+                                    # Remove README
+                                    if rel_parts and rel_parts[-1].lower() == "readme":
+                                        rel_parts = rel_parts[:-1]
+                                    path_in_url = "/".join(rel_parts)
+                                    dev_url = f"{dev_base}/{path_in_url}" if path_in_url else dev_base
+
+                                    # Set webportal_url as the main URL for document retrieval
+                                    doc.metadata["webportal_url"] = dev_url
+                                except Exception as e:
+                                    utils.logger.warning(f"Background task: Failed to create developer portal URL for {file_path}: {e}") 
+                                                                
+                                # Create GitHub URL for reference
+                                try:
                                     # Get the repository URL base without the .git extension
                                     repo_base = repo_url.replace(".git", "")
+                                    
                                     # Convert file_path to a Path object for easier manipulation
                                     path_obj = pathlib.Path(file_path)
+                                    
                                     # Try to find the branch name in the path parts
                                     path_parts = path_obj.parts
                                     relative_path = None
+                                    
                                     # Look for branch name in the path
                                     if branch in path_parts:
                                         branch_index = path_parts.index(branch)
                                         # Get all parts after the branch
                                         if branch_index + 1 < len(path_parts):
-                                            relative_path = pathlib.Path(*path_parts[branch_index + 1 :])
+                                            relative_path = pathlib.Path(*path_parts[branch_index+1:])
+                                    
                                     # If we found a relative path after the branch
                                     if relative_path:
                                         github_url = f"{repo_base}/blob/{branch}/{relative_path}"
                                     else:
                                         # Fallback: just use the file name at the end of the path
                                         github_url = f"{repo_base}/blob/{branch}/{path_obj.name}"
+                                    
+                                    # Store the GitHub URL for reference only
+                                    doc.metadata["github_url"] = github_url
                                 except Exception as e:
                                     utils.logger.warning(f"Background task: Failed to create proper GitHub URL for {file_path}: {e}")
-                                    github_url = f"{repo_base}/blob/{branch}"
-                                doc.metadata["github_url"] = github_url
+                                    doc.metadata["github_url"] = f"{repo_base}/blob/{branch}"
 
                                 # Calculate token count
                                 token_count = len(enc.encode(doc.text))

@@ -398,12 +398,11 @@ def answer_from_document_retrieval(
     
     combined_nodes = nodes + relevant_qa_nodes
     reranked_nodes = RERANKER.postprocess_nodes(nodes=combined_nodes, query_str=query)[:10]
-    # Safely extract github_urls only from nodes that have them
     useful_links = []
     for node in reranked_nodes:
-        if url := node.metadata.get("github_url"):  # Only add URLs if they exist
+        if url := node.metadata.get("webportal_url"):
             useful_links.append(url)
-    useful_links = list(dict.fromkeys(useful_links))[:3]  # Take top 3 github_url
+    useful_links = list(dict.fromkeys(useful_links))[:3]  # Take top 3 WebPortal URLs
 
     chunks = []
     for node in reranked_nodes:
