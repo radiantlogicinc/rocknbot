@@ -16,18 +16,29 @@
 
 - LDB_TAG Changed from 2.5.3 to 2.6.0 (Is this necessary?)
 
+## Golden QA Pairs Repository Update
+Create a new `file ido_qa_pairs.md` in the golden QA pairs repository with the following sample data:
+``` 
+# Question/Answer Pair 1
+
+Question: What is IDO?
+
+Answer: IDO (Identity Data Orchestration) is RadiantLogic's solution for managing identity data across multiple systems.
+```
+
+
 ## Pre-Deployment Action
 Delete the existing LanceDB datastore before deploying this release. A fresh datastore with all documents will be automatically created and populated upon deployment.
 
 **Note**: This process takes approximately 2 hours to complete. There is no notification when the rebuild is complete.
 
 ## New environment variables
-### Server Configuration (lillisa_serve.env)
+### Server Configuration (lillisa_server.env)
 1. Add the following environment variables:
     - `DOCUMENTATION_IDO_VERSIONS="v1.0"`
     - `IDO_PRODUCT_VERSIONS="dev/v1.0, v1.0"`
 
-#### Slack Configuration (lil-lisa-env)
+#### Slack Configuration (lil-lisa.env)
 1. Create two new Slack channels:
     - `lil-ido`
     - `lil-ido-admin`
