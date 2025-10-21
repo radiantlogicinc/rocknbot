@@ -29,6 +29,7 @@ IDDM_RETRIEVER = None
 IDA_RETRIEVER = None
 IDDM_QA_PAIRS_RETRIEVER = None
 IDA_QA_PAIRS_RETRIEVER = None
+IDO_QA_PAIRS_RETRIEVER = None
 RERANKER = SentenceTransformerRerank(top_n=50, model="cross-encoder/ms-marco-MiniLM-L-12-v2")
 CLIENT = None
 OPENAI_CLIENT = None
@@ -38,6 +39,7 @@ QA_USER_PROMPT = None
 
 IDDM_PRODUCT_VERSIONS = None
 IDA_PRODUCT_VERSIONS = None
+IDO_PRODUCT_VERSIONS = None
 
 lillisa_server_env = utils.LILLISA_SERVER_ENV_DICT
 
@@ -135,43 +137,62 @@ else:
     utils.logger.critical("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
     raise ValueError("IDA_PRODUCT_VERSIONS not found in lillisa_server.env")
 
+if ido_product_versions := lillisa_server_env.get("IDO_PRODUCT_VERSIONS"):
+    IDO_PRODUCT_VERSIONS = str(ido_product_versions).split(", ")
+else:
+    traceback.print_exc()
+    utils.logger.critical("IDO_PRODUCT_VERSIONS not found in lillisa_server.env")
+    raise ValueError("IDO_PRODUCT_VERSIONS not found in lillisa_server.env")
+
 IDDM_INDEX = None
 IDDM_QA_PAIRS_INDEX = None
 IDA_INDEX = None
 IDA_QA_PAIRS_INDEX = None
+IDO_INDEX = None
+IDO_QA_PAIRS_INDEX = None
+IDO_QA_PAIRS_RETRIEVER = None
+IDO_RETRIEVER = None
 IDDM_RETRIEVER = None
 IDA_RETRIEVER = None
 IDDM_QA_PAIRS_RETRIEVER = None
 IDA_QA_PAIRS_RETRIEVER = None
 def create_docdbs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
     """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
-    global IDDM_RETRIEVER, IDA_RETRIEVER
-    global IDDM_INDEX, IDA_INDEX
+    global IDDM_RETRIEVER, IDA_RETRIEVER, IDO_RETRIEVER
+    global IDDM_INDEX, IDA_INDEX, IDO_INDEX
 
     lance_db = lancedb.connect(lancedb_folderpath)
     iddm_table = lance_db.open_table("IDDM")
     ida_table = lance_db.open_table("IDA")
+    ido_table = lance_db.open_table("IDO")
     iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
     ida_vector_store = LanceDBVectorStore.from_table(ida_table)
+    ido_vector_store = LanceDBVectorStore.from_table(ido_table)
     IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
     IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
+    IDO_INDEX = VectorStoreIndex.from_vector_store(vector_store=ido_vector_store)
     IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
     IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
+    IDO_RETRIEVER = IDO_INDEX.as_retriever(similarity_top_k=50)
 
 def create_qa_pairs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
     """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
-    global IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER
-    global IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX
+    global IDDM_QA_PAIRS_RETRIEVER, IDA_QA_PAIRS_RETRIEVER, IDO_QA_PAIRS_RETRIEVER
+    global IDDM_QA_PAIRS_INDEX, IDA_QA_PAIRS_INDEX, IDO_QA_PAIRS_INDEX
 
     lance_db = lancedb.connect(lancedb_folderpath)
     iddm_qa_pairs_table = lance_db.open_table("IDDM_QA_PAIRS")
     ida_qa_pairs_table = lance_db.open_table("IDA_QA_PAIRS")
+    ido_qa_pairs_table = lance_db.open_table("IDO_QA_PAIRS")
     iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
     ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
+    ido_qa_pairs_vector_store = LanceDBVectorStore.from_table(ido_qa_pairs_table, "vector")
     IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
     IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
+    IDO_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ido_qa_pairs_vector_store)
     IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
     IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+    IDO_QA_PAIRS_RETRIEVER = IDO_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
 
 def create_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
     """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
@@ -183,6 +204,7 @@ class PRODUCT(str, Enum):
 
     IDA = "IDA"
     IDDM = "IDDM"
+    IDO = "IDO"
 
     @staticmethod
     def get_product(product: str) -> "PRODUCT":
@@ -348,6 +370,13 @@ def answer_from_document_retrieval(
         qa_pairs_index = IDDM_QA_PAIRS_INDEX
         default_document_retriever = IDDM_RETRIEVER
         default_qa_pairs_retriever = IDDM_QA_PAIRS_RETRIEVER
+    elif product_enum == PRODUCT.IDO:
+        product_versions = IDO_PRODUCT_VERSIONS
+        version_pattern = re.compile(r"\b(?:dev/)?v?\d+\.\d+\b", re.IGNORECASE)
+        document_index = IDO_INDEX
+        qa_pairs_index = IDO_QA_PAIRS_INDEX
+        default_document_retriever = IDO_RETRIEVER
+        default_qa_pairs_retriever = IDO_QA_PAIRS_RETRIEVER
     else:
         product_versions = IDA_PRODUCT_VERSIONS
         version_pattern = re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)

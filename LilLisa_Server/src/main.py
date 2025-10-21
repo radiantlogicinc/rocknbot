@@ -8,7 +8,7 @@ import sys
 import time
 import html
 import json
-import datetime
+from datetime import datetime, timezone
 import tempfile
 import zipfile
 import pathlib
@@ -57,6 +57,7 @@ from src import utils
 from src.agent_and_tools import (
     IDA_PRODUCT_VERSIONS,
     IDDM_PRODUCT_VERSIONS,
+    IDO_PRODUCT_VERSIONS,
     PRODUCT,
     answer_from_document_retrieval,
     get_matching_versions,
@@ -93,13 +94,14 @@ QA_PAIRS_GITHUB_REPO_URL = None  # URL of the GitHub repository for QA pairs
 QA_PAIRS_FOLDERPATH = None  # Path to the QA pairs folder
 DOCUMENTATION_NEW_VERSIONS = None  # List of new documentation versions
 DOCUMENTATION_EOC_VERSIONS = None  # List of EOC documentation versions
+DOCUMENTATION_IDO_VERSIONS = None  # List of IDO documentation versions
 DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS = None  # List of Identity Analytics documentation versions
 DOCUMENTATION_IA_PRODUCT_VERSIONS = None  # List of IA product documentation versions
 DOCUMENTATION_IA_SELFMANAGED_VERSIONS = None  # List of IA self-managed documentation versions
 MAX_ITERATIONS = None  # Maximum number of iterations for the ReAct agent
 LLM_MODEL = None  # Model name
 SESSION_LIFETIME_DAYS = None  # Session lifetime in days
-CURRENT_CHUNKING_STRATEGY = ChunkingStrategy.TRADITIONAL  # Current active chunking strategy
+CURRENT_CHUNKING_STRATEGY = ChunkingStrategy.CONTEXTUAL  # Current active chunking strategy
 
 # Voyage AI configuration
 VOYAGE_EMBEDDING_DIMENSION = 2048  # Embedding dimension for Voyage AI model
@@ -168,7 +170,7 @@ def detect_lancedb_chunking_strategy(lancedb_folderpath: str) -> Optional[Chunki
         table_names = db.table_names()
         
         # Check if any main product tables exist
-        for table_name in ["IDA", "IDDM", "IDA_QA_PAIRS", "IDDM_QA_PAIRS"]:
+        for table_name in ["IDA", "IDDM", "IDO"]:
             if table_name in table_names:
                 try:
                     table = db.open_table(table_name)
@@ -238,7 +240,7 @@ class LiteLLM(LLM):
     """Custom LLM implementation using LiteLLM's completion API."""
 
     class Config:
-        extra = Extra.allow
+        extra = 'allow'
 
     def __init__(self, model=LLM_MODEL, callback_manager=None, system_prompt=None, **kwargs):
         super().__init__(callback_manager=callback_manager, system_prompt=system_prompt, **kwargs)
@@ -413,7 +415,7 @@ class VoyageEmbedding(BaseEmbedding):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Manages startup and shutdown tasks for the FastAPI application."""
-    global REACT_AGENT_PROMPT, LANCEDB_FOLDERPATH, AUTHENTICATION_KEY, DOCUMENTATION_FOLDERPATH, QA_PAIRS_GITHUB_REPO_URL, QA_PAIRS_FOLDERPATH, DOCUMENTATION_NEW_VERSIONS, DOCUMENTATION_EOC_VERSIONS, DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS, DOCUMENTATION_IA_PRODUCT_VERSIONS, DOCUMENTATION_IA_SELFMANAGED_VERSIONS, MAX_ITERATIONS, LLM_MODEL
+    global REACT_AGENT_PROMPT, LANCEDB_FOLDERPATH, AUTHENTICATION_KEY, DOCUMENTATION_FOLDERPATH, QA_PAIRS_GITHUB_REPO_URL, QA_PAIRS_FOLDERPATH, DOCUMENTATION_NEW_VERSIONS, DOCUMENTATION_IDO_VERSIONS, DOCUMENTATION_EOC_VERSIONS, DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS, DOCUMENTATION_IA_PRODUCT_VERSIONS, DOCUMENTATION_IA_SELFMANAGED_VERSIONS, MAX_ITERATIONS, LLM_MODEL
 
     lillisa_server_env = utils.LILLISA_SERVER_ENV_DICT
 
@@ -467,6 +469,7 @@ async def lifespan(_app: FastAPI):
         ("DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS", "DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS"),
         ("DOCUMENTATION_IA_PRODUCT_VERSIONS", "DOCUMENTATION_IA_PRODUCT_VERSIONS"),
         ("DOCUMENTATION_IA_SELFMANAGED_VERSIONS", "DOCUMENTATION_IA_SELFMANAGED_VERSIONS"),
+        ("DOCUMENTATION_IDO_VERSIONS", "DOCUMENTATION_IDO_VERSIONS"),
     ]:
         if value := lillisa_server_env.get(key):
             globals()[var] = str(value).split(", ")
@@ -519,8 +522,8 @@ async def lifespan(_app: FastAPI):
         utils.logger.info(f"Detected existing LanceDB with {detected_strategy.value} chunking strategy")
         set_chunking_strategy(detected_strategy)
     else:
-        utils.logger.info("No existing LanceDB detected or unable to determine chunking strategy, using traditional chunking as default")
-        configure_embedding_model(ChunkingStrategy.TRADITIONAL)
+        utils.logger.info(f"No existing LanceDB detected or unable to determine chunking strategy, using {CURRENT_CHUNKING_STRATEGY.value} chunking as default")
+        configure_embedding_model(CURRENT_CHUNKING_STRATEGY)
 
     # Validate LanceDB folder path
     if not os.path.exists(LANCEDB_FOLDERPATH):
@@ -644,7 +647,7 @@ async def invoke_stream_with_nodes(
     Args:
         session_id (str): Unique identifier for the session.
         locale (str): Locale of the conversation ("en", etc.).
-        product (str): Product ("IDA" or "IDDM").
+        product (str): Product ("IDA" or "IDDM" or "IDO").
         nl_query (str): Natural language query or expert answer.
         is_expert_answering (bool): Indicates if an expert is providing the answer.
 
@@ -832,7 +835,7 @@ def invoke(
     Args:
         session_id (str): Unique identifier for the session.
         locale (str): Locale of the conversation (e.g., "en").
-        product (str): Product ("IDA" or "IDDM").
+        product (str): Product ("IDA" or "IDDM" or "IDO").
         nl_query (str): Natural language query or expert answer.
         is_expert_answering (bool): Indicates if an expert is providing the answer.
 
@@ -981,7 +984,7 @@ async def add_expert_qa_pair(
         qa_data (dict): Request body containing:
             - question (str): The user question
             - answer (str): The expert answer
-            - product (str): Product ("IDA" or "IDDM")
+            - product (str): Product ("IDA" or "IDDM" or "IDO")
             - expert_user_id (str): Expert user ID for tracking
             - channel_id (str): Slack channel ID
             - message_ts (str): Message timestamp
@@ -1007,10 +1010,10 @@ async def add_expert_qa_pair(
                 "message": "Question and answer are required"
             })
         
-        if product not in ["IDA", "IDDM"]:
+        if product not in ["IDA", "IDDM", "IDO"]:
             return JSONResponse(content={
                 "success": False,
-                "message": f"Invalid product '{product}'. Must be 'IDA' or 'IDDM'"
+                "message": f"Invalid product '{product}'. Must be 'IDA' or 'IDDM' or 'IDO'"
             })
         
         utils.logger.info(f"Adding expert QA pair for product {product}: Q='{question[:50]}...' A='{answer[:50]}...'")
@@ -1019,7 +1022,7 @@ async def add_expert_qa_pair(
         await _add_qa_pair_to_lancedb(question, answer, product)
         
         # Log the expert verification
-        timestamp = datetime.datetime.utcnow().isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         log_entry = {
             "timestamp": timestamp,
             "action": "expert_qa_verification",
@@ -1053,16 +1056,16 @@ async def _add_qa_pair_to_lancedb(question: str, answer: str, product: str):
     Args:
         question (str): The user question
         answer (str): The assistant/expert answer
-        product (str): Product name ("IDA" or "IDDM")
+        product (str): Product name ("IDA" or "IDDM" or "IDO")
         
     Note:
         This function only adds one new QA pair to the existing table for real-time expert verification.
     """
     try:
         # Validate product
-        if product not in ["IDA", "IDDM"]:
-            raise ValueError(f"Invalid product '{product}'. Must be 'IDA' or 'IDDM'")
-        
+        if product not in ["IDA", "IDDM", "IDO"]:
+            raise ValueError(f"Invalid product '{product}'. Must be 'IDA' or 'IDDM' or 'IDO'")
+
         # Create document from question
         doc = Document(text=question)
         doc.metadata["answer"] = answer
@@ -1071,6 +1074,9 @@ async def _add_qa_pair_to_lancedb(question: str, answer: str, product: str):
         if product == "IDDM":
             product_versions = IDDM_PRODUCT_VERSIONS
             version_pattern = re.compile(r"v?\d+\.\d+", re.IGNORECASE)
+        elif product == "IDO":
+            product_versions = IDO_PRODUCT_VERSIONS
+            version_pattern = re.compile(r"\b(?:dev/)?v?\d+\.\d+\b", re.IGNORECASE)
         else:  # IDA
             product_versions = IDA_PRODUCT_VERSIONS
             version_pattern = re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
@@ -1174,7 +1180,7 @@ async def record_endorsement(
 
         # For chunk-specific feedback
         if endorsement_type == "chunks" and chunk_text is not None:
-            timestamp = datetime.datetime.utcnow().isoformat()
+            timestamp = datetime.now(datetime.timezone.utc).isoformat()
             feedback_src = "expert" if is_expert else "user"
             thumbs_up_log_value = 1 if thumbs_up else 0
             
@@ -1212,7 +1218,7 @@ async def record_endorsement(
             }
             simplified_nodes.append(simplified_node)
 
-        timestamp = datetime.datetime.utcnow().isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         feedback_src = "expert" if is_expert else "user"
         
         # Convert boolean thumbs_up to 1 or 0 for logging
@@ -1246,7 +1252,7 @@ async def get_golden_qa_pairs(product: str, encrypted_key: str) -> FileResponse:
     Retrieves golden QA pairs for a specified product from a GitHub repository.
 
     Args:
-        product (str): Product name ("IDA" or "IDDM").
+        product (str): Product name ("IDA" or "IDDM" or "IDO").
         encrypted_key (str): JWT key for authentication.
 
     Returns:
@@ -1332,12 +1338,16 @@ async def _run_update_golden_qa_pairs_task():
 
             documents = []
             qa_pattern = re.compile(r"Question:\s*(.*?)\nAnswer:\s*(.*)", re.DOTALL)
-            product_versions = IDDM_PRODUCT_VERSIONS if product == "IDDM" else IDA_PRODUCT_VERSIONS
-            version_pattern = (
-                re.compile(r"v?\d+\.\d+", re.IGNORECASE)
-                if product == "IDDM"
-                else re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
-            )
+            # Determine product versions based on product type
+            if product == "IDDM":
+                product_versions = IDDM_PRODUCT_VERSIONS
+                version_pattern = re.compile(r"v?\d+\.\d+", re.IGNORECASE)
+            elif product == "IDO":
+                product_versions = IDO_PRODUCT_VERSIONS
+                version_pattern = re.compile(r"\b(?:dev/)?v?\d+\.\d+\b", re.IGNORECASE)
+            else:  # IDA
+                product_versions = IDA_PRODUCT_VERSIONS
+                version_pattern = re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
 
             for pair in qa_pairs:
                 if match := qa_pattern.search(pair):
@@ -1385,7 +1395,7 @@ async def update_golden_qa_pairs(product: str, encrypted_key: str, background_ta
     Initiates the update of golden QA pairs in LanceDB for a specified product in the background.
 
     Args:
-        product (str): Product name ("IDA" or "IDDM").
+        product (str): Product name ("IDA" or "IDDM" or "IDO").
         encrypted_key (str): JWT key for authentication.
         background_tasks (BackgroundTasks): FastAPI background task manager.
 
@@ -1419,6 +1429,9 @@ async def _run_rebuild_docs_task_traditional():
                     DOCUMENTATION_IA_SELFMANAGED_VERSIONS,
                 ),
             ],
+            "IDO" : [
+                ("https://github.com/radiantlogic-v8/documentation-ido.git", DOCUMENTATION_IDO_VERSIONS)
+            ]
         }
 
         def find_md_files(directory):
@@ -1526,8 +1539,19 @@ async def _run_rebuild_docs_task_traditional():
                                     elif product == "IDDM":
                                         version = branch.lstrip("v")
                                         dev_base = f"https://developer.radiantlogic.com/idm/v{version}"
-                                    else:
-                                        dev_base = f"https://developer.radiantlogic.com/ia/{branch}"
+                                    elif product == "IDO":
+                                        if branch.startswith("dev/"):
+                                            version = branch.split("/", 1)[1].lstrip("v")
+                                        else:
+                                            version = branch.lstrip("v")
+                                        dev_base = f"https://developer.radiantlogic.com/ido/v{version}"
+                                    else:  # IDA
+                                        if branch == "descartes-dev":
+                                            dev_base = f"https://developer.radiantlogic.com/ia/descartes"
+                                        elif branch == "version-16":
+                                            dev_base = f"https://developer.radiantlogic.com/ia/version-1.6"
+                                        else:
+                                            dev_base = f"https://developer.radiantlogic.com/ia/{branch}"
                                     
                                     path_obj = pathlib.Path(file_path)
                                     path_parts = list(path_obj.parts)
@@ -1701,6 +1725,9 @@ async def _run_rebuild_docs_task_contextual():
                     DOCUMENTATION_IA_SELFMANAGED_VERSIONS,
                 ),
             ],
+            "IDO" : [
+                ("https://github.com/radiantlogic-v8/documentation-ido.git", DOCUMENTATION_IDO_VERSIONS)
+            ]
         }
 
         def find_md_files(directory):
@@ -1814,8 +1841,19 @@ async def _run_rebuild_docs_task_contextual():
                                     elif product == "IDDM":
                                         version = branch.lstrip("v")
                                         dev_base = f"https://developer.radiantlogic.com/idm/v{version}"
-                                    else:
-                                        dev_base = f"https://developer.radiantlogic.com/ia/{branch}"
+                                    elif product == "IDO":
+                                        if branch.startswith("dev/"):
+                                            version = branch.split("/", 1)[1].lstrip("v")
+                                        else:
+                                            version = branch.lstrip("v")
+                                        dev_base = f"https://developer.radiantlogic.com/ido/v{version}"
+                                    else:  # IDA
+                                        if branch == "descartes-dev":
+                                            dev_base = f"https://developer.radiantlogic.com/ia/descartes"
+                                        elif branch == "version-16":
+                                            dev_base = f"https://developer.radiantlogic.com/ia/version-1.6"
+                                        else:
+                                            dev_base = f"https://developer.radiantlogic.com/ia/{branch}"
                                     
                                     path_obj = pathlib.Path(file_path)
                                     path_parts = list(path_obj.parts)
@@ -2096,9 +2134,13 @@ async def _run_rebuild_docs_task_contextual():
 
 
 async def _run_rebuild_docs_task():
-    """Main function that uses traditional chunking by default for startup."""
-    utils.logger.info("Using traditional chunking strategy (OpenAI text-embedding-3-large) for startup")
-    await _run_rebuild_docs_task_traditional()
+    """Main function that uses the configured CURRENT_CHUNKING_STRATEGY for startup."""
+    if CURRENT_CHUNKING_STRATEGY == ChunkingStrategy.CONTEXTUAL:
+        utils.logger.info(f"Using {CURRENT_CHUNKING_STRATEGY.value} chunking strategy (Voyage voyage-context-3) for startup")
+        await _run_rebuild_docs_task_contextual()
+    else:
+        utils.logger.info(f"Using {CURRENT_CHUNKING_STRATEGY.value} chunking strategy (OpenAI text-embedding-3-large) for startup")
+        await _run_rebuild_docs_task_traditional()
 
 async def _run_complete_rebuild_traditional():
     """Rebuilds both documents and QA pairs with traditional chunking strategy."""
