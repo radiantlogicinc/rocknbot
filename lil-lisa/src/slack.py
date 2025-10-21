@@ -38,6 +38,9 @@ CHANNEL_ID_IDDM = lil_lisa_env["CHANNEL_ID_IDDM"]
 ADMIN_CHANNEL_ID_IDDM = lil_lisa_env["ADMIN_CHANNEL_ID_IDDM"]
 CHANNEL_ID_IDA = lil_lisa_env["CHANNEL_ID_IDA"]
 ADMIN_CHANNEL_ID_IDA = lil_lisa_env["ADMIN_CHANNEL_ID_IDA"]
+CHANNEL_ID_IDO = lil_lisa_env["CHANNEL_ID_IDO"]
+ADMIN_CHANNEL_ID_IDO = lil_lisa_env["ADMIN_CHANNEL_ID_IDO"]
+EXPERT_USER_ID_IDO = lil_lisa_env["EXPERT_USER_ID_IDO"]
 EXPERT_USER_ID_IDA = lil_lisa_env["EXPERT_USER_ID_IDA"]
 EXPERT_USER_ID_IDDM = lil_lisa_env["EXPERT_USER_ID_IDDM"]
 AUTHENTICATION_KEY = lil_lisa_env["AUTHENTICATION_KEY"]
@@ -847,12 +850,15 @@ def determine_product_and_expert(channel_id):
     - tuple: A tuple containing the product string and the expert user ID.
     """
 
-    if channel_id in CHANNEL_ID_IDDM or channel_id in ADMIN_CHANNEL_ID_IDDM:
+    if channel_id == CHANNEL_ID_IDDM or channel_id == ADMIN_CHANNEL_ID_IDDM:
         product = "IDDM"
         expert_user_id = EXPERT_USER_ID_IDDM
-    elif channel_id in CHANNEL_ID_IDA or channel_id in ADMIN_CHANNEL_ID_IDA:
+    elif channel_id == CHANNEL_ID_IDA or channel_id == ADMIN_CHANNEL_ID_IDA:
         product = "IDA"
         expert_user_id = EXPERT_USER_ID_IDA
+    elif channel_id == CHANNEL_ID_IDO or channel_id == ADMIN_CHANNEL_ID_IDO:
+        product = "IDO"
+        expert_user_id = EXPERT_USER_ID_IDO
     else:
         product = None
         expert_user_id = None
@@ -960,9 +966,7 @@ async def get_golden_qa_pairs(ack, body, say):
 
     direct_message_convo = await app.client.conversations_open(users=user_id)
     dm_channel_id = direct_message_convo.data["channel"]["id"]
-    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
-        ADMIN_CHANNEL_ID_IDA, user_id
-    )
+    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(ADMIN_CHANNEL_ID_IDA, user_id) or await check_members(ADMIN_CHANNEL_ID_IDO, user_id) 
     if not contains_user:
         # Return an error message or handle unauthorized users
         await say(
@@ -1023,7 +1027,7 @@ async def update_golden_qa_pairs(ack, body, say):    # pylint: disable=too-many-
     channel_id = body.get("channel_id")
     direct_message_convo = await app.client.conversations_open(users=user_id)
     dm_channel_id = direct_message_convo.data["channel"]["id"]
-    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(ADMIN_CHANNEL_ID_IDA, user_id)
+    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(ADMIN_CHANNEL_ID_IDA, user_id) or await check_members(ADMIN_CHANNEL_ID_IDO, user_id)
     if not contains_user:
         # Return an error message or handle unauthorized users
         await say(
@@ -1140,9 +1144,7 @@ async def rebuild_docs_traditional(ack, body, say):
 
     direct_message_convo = await app.client.conversations_open(users=user_id)
     dm_channel_id = direct_message_convo.data["channel"]["id"]
-    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
-        ADMIN_CHANNEL_ID_IDA, user_id
-    )
+    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(ADMIN_CHANNEL_ID_IDA, user_id) or await check_members(ADMIN_CHANNEL_ID_IDO, user_id)
     if not contains_user:
         # Return an error message or handle unauthorized users
         await say(
@@ -1200,9 +1202,7 @@ async def rebuild_docs_contextual(ack, body, say):
 
     direct_message_convo = await app.client.conversations_open(users=user_id)
     dm_channel_id = direct_message_convo.data["channel"]["id"]
-    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
-        ADMIN_CHANNEL_ID_IDA, user_id
-    )
+    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(ADMIN_CHANNEL_ID_IDA, user_id) or await check_members(ADMIN_CHANNEL_ID_IDO, user_id)
     if not contains_user:
         # Return an error message or handle unauthorized users
         await say(
@@ -1261,9 +1261,7 @@ async def cleanup_sessions(ack, body, say):
     dm_channel_id = direct_message_convo.data["channel"]["id"]
     
     # Check if user is authorized (in admin channels)
-    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(
-        ADMIN_CHANNEL_ID_IDA, user_id
-    )
+    contains_user = await check_members(ADMIN_CHANNEL_ID_IDDM, user_id) or await check_members(ADMIN_CHANNEL_ID_IDA, user_id) or await check_members(ADMIN_CHANNEL_ID_IDO, user_id) 
     if not contains_user:
         # Return an error message for unauthorized users
         await say(

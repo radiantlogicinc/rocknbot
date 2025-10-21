@@ -441,6 +441,267 @@
             background-color: #e7f1ff;
             border-color: #0056b3;
         }
+
+        /* Responsive Design for Mobile */
+        @media screen and (max-width: 768px) {
+
+            /* Header adjustments */
+            header.header {
+                flex-direction: column;
+                height: auto;
+                padding: 15px 20px;
+                gap: 15px;
+            }
+
+            nav.nav {
+                width: 100%;
+                justify-content: center;
+            }
+
+            nav.nav img.logo-image {
+                height: 60px;
+                margin-left: 0;
+                margin-right: 0;
+            }
+
+            .right-nav {
+                width: 100%;
+                justify-content: center;
+                flex-wrap: wrap;
+                gap: 10px;
+            }
+
+            .nav-link {
+                font-size: 1rem;
+            }
+
+            button.request-trial {
+                padding: 8px 15px;
+                font-size: 0.9rem;
+            }
+
+            /* Main content adjustments */
+            .main-content {
+                margin: 20px auto;
+                padding: 10px;
+            }
+
+            section.hero h1 {
+                font-size: 1.8rem;
+                margin-bottom: 15px;
+            }
+
+            section.hero p {
+                font-size: 1rem;
+                margin-bottom: 25px;
+            }
+
+            /* Chrome container adjustments */
+            #chrome-container {
+                padding: 20px 15px;
+                margin-bottom: 20px;
+                border-radius: 10px;
+            }
+
+            /* Chrome tabs - stack vertically on mobile */
+            .chrome-tabs {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 8px;
+            }
+
+            .chrome-tab {
+                margin: 0;
+                width: 100%;
+                padding: 12px 15px;
+                text-align: center;
+                font-size: 0.95rem;
+            }
+
+            #global-language-container {
+                margin-left: 0;
+                margin-right: 0;
+                width: 100%;
+                justify-content: center;
+                padding: 10px 0;
+            }
+
+            #start-new-chat-button {
+                margin-left: 0;
+                width: 100%;
+                padding: 12px 15px;
+            }
+
+            /* Chat messages adjustments */
+            .grok-container {
+                padding: 15px;
+                border-radius: 10px;
+            }
+
+            .grok-message {
+                padding: 12px 15px;
+                font-size: 0.9rem;
+                word-break: break-word;
+                overflow-wrap: break-word;
+            }
+
+            .user-message,
+            .assistant-message {
+                max-width: 100%;
+                font-size: 0.9rem;
+            }
+
+            .assistant-message {
+                padding: 15px;
+            }
+
+            /* Input area adjustments */
+            #common-input-area {
+                width: 95%;
+                bottom: 10px;
+                flex-direction: column;
+                gap: 10px;
+                align-items: stretch;
+            }
+
+            #common-input-area input[type="text"] {
+                width: 100%;
+                padding: 14px 18px;
+                font-size: 1rem;
+                order: 1;
+            }
+
+            #common-input-area button {
+                width: auto;
+                padding: 12px 30px;
+                font-size: 0.95rem;
+                order: 2;
+                align-self: center;
+            }
+
+            .checkbox-container {
+                margin-left: 0;
+                order: 3;
+                align-self: center;
+            }
+
+            /* Source nodes adjustments */
+            .source-node {
+                padding: 10px;
+                font-size: 0.85rem;
+            }
+
+            .source-url a {
+                font-size: 0.8rem;
+                padding: 4px 8px;
+                word-break: break-all;
+            }
+
+            /* Documentation links */
+            #doc-links-container {
+                font-size: 0.9rem;
+                word-wrap: break-word;
+            }
+
+            /* Scroll to bottom button */
+            #scroll-to-bottom-btn {
+                bottom: 180px;
+                right: 10px;
+                width: 45px;
+                height: 45px;
+                font-size: 18px;
+            }
+
+            /* Feedback buttons */
+            .thumb-btn {
+                font-size: 1.1em;
+            }
+
+            /* Description and CoT containers */
+            .description,
+            .cot {
+                font-size: 0.85em;
+                padding: 8px;
+            }
+
+            .cot {
+                font-size: 0.55em;
+            }
+
+            /* Loading indicator */
+            .loading-text {
+                font-size: 0.85em;
+            }
+
+            /* Feedback popup */
+            .feedback-popup {
+                bottom: 190px;
+                right: 10px;
+                font-size: 0.85em;
+                padding: 8px 15px;
+            }
+        }
+
+        /* Tablet adjustments */
+        @media screen and (min-width: 769px) and (max-width: 1024px) {
+            .main-content {
+                padding: 15px;
+            }
+
+            #chrome-container {
+                padding: 30px 25px;
+            }
+
+            .chrome-tabs {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .chrome-tab {
+                margin: 5px;
+                flex: 1 1 calc(50% - 20px);
+                min-width: 150px;
+            }
+
+            #common-input-area {
+                width: 90%;
+            }
+        }
+
+        /* Small mobile devices */
+        @media screen and (max-width: 480px) {
+            section.hero h1 {
+                font-size: 1.5rem;
+            }
+
+            section.hero p {
+                font-size: 0.9rem;
+            }
+
+            .chrome-tab {
+                font-size: 0.9rem;
+                padding: 10px 12px;
+            }
+
+            #common-input-area input[type="text"] {
+                font-size: 0.9rem;
+                padding: 10px 12px;
+            }
+
+            #common-input-area button {
+                font-size: 0.9rem;
+                padding: 10px 15px;
+            }
+
+            .grok-message {
+                font-size: 0.85rem;
+                padding: 10px 12px;
+            }
+
+            .assistant-message {
+                padding: 12px;
+            }
+        }
     </style>
 </head>
 
@@ -473,6 +734,8 @@
                 <button class="chrome-tab" id="tab-ida" onclick="selectProduct('IDA')">Identity Analytics</button>
                 <button class="chrome-tab" id="tab-iddm" onclick="selectProduct('IDDM')">Identity Data
                     Management</button>
+                <!-- new ido -->
+                <!-- <button class="chrome-tab" id="tab-ido" onclick="selectProduct('IDO')">Identity Observability</button> -->
                 <button class="chrome-tab" id="tab-eoc" onclick="selectProduct('EOC')">Environment Operations
                     Center</button>
                 <div id="global-language-container">
@@ -506,6 +769,7 @@
         const sessions = {
             "IDA": { sessionId: null, firstQuerySent: false },
             "IDDM": { sessionId: null, firstQuerySent: false },
+            // "IDO": { sessionId: null, firstQuerySent: false },
             "EOC": { sessionId: null, firstQuerySent: false }
         };
         const chatTemplates = {
@@ -515,6 +779,9 @@
             "IDDM": `<div id="chat-IDDM" class="grok-container">
                 <div id="messages-IDDM" class="grok-messages"></div>
               </div>`,
+            // "IDO": `<div id="chat-IDO" class="grok-container">
+            //     <div id="messages-IDO" class="grok-messages"></div>
+            //   </div>`,
             "EOC": `<div class="static-info">
                 <p>Environment Operations Center provides a unified control plane for managing your Radiant Logic SaaS applications. The documentation assistant doesn't support it yet. Please click the link below to access the documentation.</p>
               </div>`
@@ -1315,6 +1582,10 @@
                     'Use Identity Analytics to quickly respond to audit recommendations and automate controls for compliant access rights.<br>' +
                     'See user guide <a href="https://developer.radiantlogic.com/ia/iap-3.2/#0" target="_blank">User Guide</a><br>' +
                     'See developer documentation <a href="https://developer.radiantlogic.com/ia/descartes/#1" target="_blank">Developer Documentation</a>';
+                // } else if (product === "IDO") {
+                //     docLinksContainer.innerHTML =
+                //         'Use Identity Observability to monitor and analyze identity-related activities across your infrastructure.<br>' +
+                //         'See documentation <a href="https://developer.radiantlogic.com/ido/v1.0/#" target="_blank">Documentation</a>';
             } else {
                 docLinksContainer.innerHTML = "";
             }
