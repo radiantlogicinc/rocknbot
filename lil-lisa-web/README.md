@@ -52,14 +52,9 @@ LIL_LISA_SERVER_URL=http://your-lillisa-server-url
 1. Clone the repository
 2. Create a virtual environment:
    ```bash
-   conda env create -f environment.yml
+   make setup-env
    ```
-   or
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
+   This creates a uv virtual environment (`.venv`) and installs all dependencies. Select `lil-lisa-web/.venv/bin/python` as the Python interpreter in your IDE.
 
 3. Set up the environment variables as described above
 

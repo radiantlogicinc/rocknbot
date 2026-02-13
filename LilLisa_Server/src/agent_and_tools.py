@@ -6,6 +6,7 @@ ReAct agent that handles a query in an intelligent manner
 
 import os
 import re
+import time
 import traceback
 from difflib import get_close_matches
 from enum import Enum
@@ -13,11 +14,15 @@ import logging
 import json
 
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
+
 from litellm import completion
 from llama_index.core import Settings, VectorStoreIndex
 from llama_index.core.postprocessor import SentenceTransformerRerank
 from llama_index.embeddings.openai import OpenAIEmbedding
 from openai import OpenAI
+import torch
 
 import lancedb
 
@@ -30,7 +35,18 @@ IDA_RETRIEVER = None
 IDDM_QA_PAIRS_RETRIEVER = None
 IDA_QA_PAIRS_RETRIEVER = None
 IDO_QA_PAIRS_RETRIEVER = None
-RERANKER = SentenceTransformerRerank(top_n=50, model="cross-encoder/ms-marco-MiniLM-L-12-v2")
+if torch.cuda.is_available():
+    _reranker_device = "cuda"
+    logging.info("Reranker using GPU (CUDA): %s", torch.cuda.get_device_name(0))
+else:
+    _reranker_device = "cpu"
+    logging.info("Reranker using CPU -- no CUDA GPU detected")
+
+RERANKER = SentenceTransformerRerank(
+    top_n=20,
+    model="cross-encoder/ms-marco-MiniLM-L-12-v2",
+    device=_reranker_device,
+)
 CLIENT = None
 OPENAI_CLIENT = None
 
@@ -140,9 +156,7 @@ else:
 if ido_product_versions := lillisa_server_env.get("IDO_PRODUCT_VERSIONS"):
     IDO_PRODUCT_VERSIONS = str(ido_product_versions).split(", ")
 else:
-    traceback.print_exc()
-    utils.logger.critical("IDO_PRODUCT_VERSIONS not found in lillisa_server.env")
-    raise ValueError("IDO_PRODUCT_VERSIONS not found in lillisa_server.env")
+    utils.logger.warning("IDO_PRODUCT_VERSIONS not found in lillisa_server.env — IDO functionality will be disabled")
 
 IDDM_INDEX = None
 IDDM_QA_PAIRS_INDEX = None
@@ -164,16 +178,21 @@ def create_docdbs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> Non
     lance_db = lancedb.connect(lancedb_folderpath)
     iddm_table = lance_db.open_table("IDDM")
     ida_table = lance_db.open_table("IDA")
-    ido_table = lance_db.open_table("IDO")
     iddm_vector_store = LanceDBVectorStore.from_table(iddm_table)
     ida_vector_store = LanceDBVectorStore.from_table(ida_table)
-    ido_vector_store = LanceDBVectorStore.from_table(ido_table)
     IDDM_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_vector_store)
     IDA_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_vector_store)
-    IDO_INDEX = VectorStoreIndex.from_vector_store(vector_store=ido_vector_store)
     IDDM_RETRIEVER = IDDM_INDEX.as_retriever(similarity_top_k=50)
     IDA_RETRIEVER = IDA_INDEX.as_retriever(similarity_top_k=50)
-    IDO_RETRIEVER = IDO_INDEX.as_retriever(similarity_top_k=50)
+
+    # IDO is optional — only initialize if the table exists
+    try:
+        ido_table = lance_db.open_table("IDO")
+        ido_vector_store = LanceDBVectorStore.from_table(ido_table)
+        IDO_INDEX = VectorStoreIndex.from_vector_store(vector_store=ido_vector_store)
+        IDO_RETRIEVER = IDO_INDEX.as_retriever(similarity_top_k=50)
+    except Exception:
+        utils.logger.warning("IDO LanceDB table not found — IDO document retrieval will be disabled")
 
 def create_qa_pairs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
     """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
@@ -183,16 +202,21 @@ def create_qa_pairs_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> N
     lance_db = lancedb.connect(lancedb_folderpath)
     iddm_qa_pairs_table = lance_db.open_table("IDDM_QA_PAIRS")
     ida_qa_pairs_table = lance_db.open_table("IDA_QA_PAIRS")
-    ido_qa_pairs_table = lance_db.open_table("IDO_QA_PAIRS")
     iddm_qa_pairs_vector_store = LanceDBVectorStore.from_table(iddm_qa_pairs_table, "vector")
     ida_qa_pairs_vector_store = LanceDBVectorStore.from_table(ida_qa_pairs_table, "vector")
-    ido_qa_pairs_vector_store = LanceDBVectorStore.from_table(ido_qa_pairs_table, "vector")
     IDDM_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=iddm_qa_pairs_vector_store)
     IDA_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ida_qa_pairs_vector_store)
-    IDO_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ido_qa_pairs_vector_store)
     IDDM_QA_PAIRS_RETRIEVER = IDDM_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
     IDA_QA_PAIRS_RETRIEVER = IDA_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
-    IDO_QA_PAIRS_RETRIEVER = IDO_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+
+    # IDO QA pairs are optional — only initialize if the table exists
+    try:
+        ido_qa_pairs_table = lance_db.open_table("IDO_QA_PAIRS")
+        ido_qa_pairs_vector_store = LanceDBVectorStore.from_table(ido_qa_pairs_table, "vector")
+        IDO_QA_PAIRS_INDEX = VectorStoreIndex.from_vector_store(vector_store=ido_qa_pairs_vector_store)
+        IDO_QA_PAIRS_RETRIEVER = IDO_QA_PAIRS_INDEX.as_retriever(similarity_top_k=8)
+    except Exception:
+        utils.logger.warning("IDO_QA_PAIRS LanceDB table not found — IDO QA pairs retrieval will be disabled")
 
 def create_lancedb_retrievers_and_indices(lancedb_folderpath: str) -> None:
     """Create indices and retrievers from lancedb tables, attempting to create indices if they don't exist."""
@@ -248,6 +272,37 @@ class PRODUCT(str, Enum):
 #         raise ValueError(f"{retriever_name} does not exist")
 
 
+class CachedQueryEmbedding:
+    """Wraps an embedding model to cache query embeddings, avoiding duplicate API calls.
+
+    When two retrievers need to embed the same query (e.g., QA pairs + documents),
+    the first call computes the embedding and the second returns the cached result.
+    Thread-safe for use with concurrent retrieval.
+    """
+
+    def __init__(self, base_embed_model):
+        self._base = base_embed_model
+        self._cache = {}
+        self._lock = threading.Lock()
+
+    def get_query_embedding(self, query_str):
+        with self._lock:
+            if query_str in self._cache:
+                utils.logger.debug("PERF | query_embedding_cache_hit")
+                return list(self._cache[query_str])  # Return copy to prevent mutation
+        t0 = time.perf_counter()
+        embedding = self._base.get_query_embedding(query_str)
+        elapsed = time.perf_counter() - t0
+        utils.logger.debug("PERF | query_embedding | %.3fs", elapsed)
+        with self._lock:
+            self._cache[query_str] = embedding
+        return embedding
+
+    def __getattr__(self, name):
+        """Delegate all other attribute access to the base embedding model."""
+        return getattr(self._base, name)
+
+
 def handle_user_answer(answer: str) -> str:
     """
     Tool should be called when a user enters an answer to a previous question of theirs. Thank them and merely mimic their answer.
@@ -271,6 +326,7 @@ def improve_query(query: str, conversation_history: str) -> str:
     """
     
     response = ""
+    t0 = time.perf_counter()
     for chunk in completion(
         model=LLM_MODEL, 
         messages=[
@@ -282,6 +338,8 @@ def improve_query(query: str, conversation_history: str) -> str:
         if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
             content = chunk.choices[0].delta.content
             response += content
+    elapsed = time.perf_counter() - t0
+    utils.logger.debug("PERF | improve_query_llm | %.3fs", elapsed)
 
     return response
 
@@ -358,6 +416,7 @@ def answer_from_document_retrieval(
     RAG Search. Searches through a database of 10,000 documents, and based on a query, returns the top-10 relevant documents and synthesizes an answer.
     Return a JSON string with response and top 10 reranked nodes.
     """
+    t0_total = time.perf_counter()
     response = ""
     qa_system_prompt = QA_SYSTEM_PROMPT
     query = generated_query or original_query
@@ -371,6 +430,11 @@ def answer_from_document_retrieval(
         default_document_retriever = IDDM_RETRIEVER
         default_qa_pairs_retriever = IDDM_QA_PAIRS_RETRIEVER
     elif product_enum == PRODUCT.IDO:
+        # IDO is optional — check if it was initialized
+        if IDO_INDEX is None or IDO_QA_PAIRS_INDEX is None:
+            elapsed = time.perf_counter() - t0_total
+            utils.logger.debug("PERF | answer_from_document_retrieval_total | %.3fs", elapsed)
+            return json.dumps({"response": "IDO product is not configured on this server. Please contact an administrator.", "reranked_nodes": []})
         product_versions = IDO_PRODUCT_VERSIONS
         version_pattern = re.compile(r"\b(?:dev/)?v?\d+\.\d+\b", re.IGNORECASE)
         document_index = IDO_INDEX
@@ -401,10 +465,48 @@ def answer_from_document_retrieval(
         )
     else:
         qa_system_prompt += "\n10. At the beginning of your response, mention that because a specific product version was not specified, information from all available versions was used."
-        document_retriever = default_document_retriever
-        qa_pairs_retriever = default_qa_pairs_retriever
+        # Create fresh retrievers (not global defaults) so we can set cached embed model
+        document_retriever = document_index.as_retriever(similarity_top_k=50)
+        qa_pairs_retriever = qa_pairs_index.as_retriever(similarity_top_k=8)
 
-    qa_nodes = qa_pairs_retriever.retrieve(query)
+    # Set up embedding cache to avoid duplicate API calls during parallel retrieval
+    cached_embed = CachedQueryEmbedding(Settings.embed_model)
+    t0_embed = time.perf_counter()
+    cached_embed.get_query_embedding(query)  # Pre-compute and cache the embedding
+    utils.logger.debug("PERF | pre_compute_embedding | %.3fs", time.perf_counter() - t0_embed)
+    document_retriever._embed_model = cached_embed
+    qa_pairs_retriever._embed_model = cached_embed
+
+    # Run QA pairs and document retrieval in parallel
+    def _retrieve_qa():
+        t0 = time.perf_counter()
+        result = qa_pairs_retriever.retrieve(query)
+        utils.logger.debug("PERF | retrieve_qa_pairs | %.3fs", time.perf_counter() - t0)
+        return result
+
+    def _retrieve_docs():
+        t0 = time.perf_counter()
+        try:
+            result = document_retriever.retrieve(query)
+            utils.logger.debug("PERF | retrieve_documents | %.3fs", time.perf_counter() - t0)
+            return result
+        except Warning:
+            utils.logger.debug("PERF | retrieve_documents | %.3fs", time.perf_counter() - t0)
+            return []
+
+    t0_parallel = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_qa = executor.submit(_retrieve_qa)
+        future_docs = executor.submit(_retrieve_docs)
+        qa_nodes = future_qa.result()
+        nodes = future_docs.result()
+    utils.logger.debug("PERF | parallel_retrieval_total | %.3fs", time.perf_counter() - t0_parallel)
+
+    if not nodes:
+        elapsed = time.perf_counter() - t0_total
+        utils.logger.debug("PERF | answer_from_document_retrieval_total | %.3fs", elapsed)
+        return json.dumps({"response": "No relevant documents were found for this query.", "reranked_nodes": []})
+
     relevant_qa_nodes = []
     potentially_relevant_qa_nodes = []
 
@@ -420,13 +522,10 @@ def answer_from_document_retrieval(
     #         response += f"\nMatch {idx}:\nQuestion: {node.text}\nAnswer: {node.metadata['answer']}\n"
     #     response += "\n\nAfter searching through the documentation database, this was found:\n"
 
-    try:
-        nodes = document_retriever.retrieve(query)
-    except Warning:
-        return "No relevant documents were found for this query."
-    
     combined_nodes = nodes + relevant_qa_nodes
+    t0_rerank = time.perf_counter()
     reranked_nodes = RERANKER.postprocess_nodes(nodes=combined_nodes, query_str=query)[:10]
+    utils.logger.debug("PERF | reranking | %.3fs", time.perf_counter() - t0_rerank)
     useful_links = []
     for node in reranked_nodes:
         if url := node.metadata.get("webportal_url"):
@@ -445,25 +544,24 @@ def answer_from_document_retrieval(
             chunks.append(node.text)
     
     raw_chunks = "\n\n".join(chunks)
+    t0_format = time.perf_counter()
     formatted_chunks = format_tables_in_chunks(raw_chunks)
+    utils.logger.debug("PERF | format_tables | %.3fs", time.perf_counter() - t0_format)
 
     user_prompt = QA_USER_PROMPT.replace("<CONTEXT>", formatted_chunks)
     user_prompt = user_prompt.replace("<CONVERSATION_HISTORY>", conversation_history)
     user_prompt = user_prompt.replace("<QUESTION>", original_query)
 
-    llm_response = ""
-    for chunk in completion(
-        model=LLM_MODEL, 
+    t0_llm = time.perf_counter()
+    llm_response = completion(
+        model=LLM_MODEL,
         messages=[
-            {"role": "system", "content": qa_system_prompt}, 
+            {"role": "system", "content": qa_system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        stream=True,  # Enable streaming
-    ):
-        if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
-            content = chunk.choices[0].delta.content
-            llm_response += content
-    
+    ).choices[0].message.content
+    utils.logger.debug("PERF | answer_generation_llm | %.3fs", time.perf_counter() - t0_llm)
+
     response += llm_response
 
     # Format links as plain markdown links to avoid double HTML conversion
@@ -493,6 +591,8 @@ def answer_from_document_retrieval(
             nodes_info.append({"text": node.text, "metadata": node.metadata})
     
     response_dict = {"response": response, "reranked_nodes": nodes_info}
+    elapsed = time.perf_counter() - t0_total
+    utils.logger.debug("PERF | answer_from_document_retrieval_total | %.3fs", elapsed)
     return json.dumps(response_dict)
 
 

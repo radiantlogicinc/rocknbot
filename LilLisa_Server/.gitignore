@@ -1,3 +1,6 @@
+# Ignore uv virtual environment
+.venv/
+
 # Ignore mypy cache
 .mypy_cache/
 

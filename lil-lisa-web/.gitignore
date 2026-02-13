@@ -1,4 +1,7 @@
 lil-lisa-web.env
 
+# Ignore uv virtual environment
+.venv/
+
 # Ignore Python bytecode cache
 __pycache__/

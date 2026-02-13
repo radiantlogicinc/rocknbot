@@ -8,6 +8,8 @@ from typing import Optional
 
 from dotenv import dotenv_values
 
+logger = logging.getLogger("RL_Logger")
+
 LILLISA_SERVER_ENV_DICT = {**dotenv_values("./env/lillisa_server.env")}
 # load config params from override folder
 if areofp := LILLISA_SERVER_ENV_DICT.get("LILLISA_SERVER_ENV_OVERRIDE_FILEPATH", None):
@@ -15,9 +17,9 @@ if areofp := LILLISA_SERVER_ENV_DICT.get("LILLISA_SERVER_ENV_OVERRIDE_FILEPATH",
     if os.path.isfile(areofp):
         LILLISA_SERVER_ENV_DICT = {**LILLISA_SERVER_ENV_DICT, **dotenv_values(areofp)}
     else:
-        print("The env file at LILLISA_SERVER_ENV_OVERRIDE_FILEPATH is missing")
+        logger.debug("The env file at LILLISA_SERVER_ENV_OVERRIDE_FILEPATH is missing")
 else:
-    print("LILLISA_SERVER_ENV_OVERRIDE_FILEPATH env variable not found in lillisa_server.env")
+    logger.debug("LILLISA_SERVER_ENV_OVERRIDE_FILEPATH env variable not found in lillisa_server.env")
 LILLISA_SERVER_ENV_DICT = {
     **LILLISA_SERVER_ENV_DICT,
     **os.environ,  # override loaded values with environment variables
@@ -129,6 +131,7 @@ ch.setLevel(logging.DEBUG)
 ch.setFormatter(FormatterNs("%(asctime)s - %(levelname)s - %(message)s"))
 pytest_assertion_logger.addHandler(ch)
 
+logging.getLogger("opentelemetry.exporter.otlp.proto.grpc.exporter").setLevel(logging.ERROR)
 logging.getLogger("boto").setLevel(logging.WARNING)
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)

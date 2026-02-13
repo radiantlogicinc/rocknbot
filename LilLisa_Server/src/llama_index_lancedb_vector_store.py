@@ -9,7 +9,7 @@ import lancedb.remote.table  # type: ignore
 import lancedb.rerankers
 import numpy as np
 import pandas as pd
-from llama_index.core.bridge.pydantic import PrivateAttr
+from pydantic import PrivateAttr
 from llama_index.core.schema import (
     BaseNode,
     MetadataMode,

@@ -1,25 +1,22 @@
-# Use a base image with Python and required dependencies
-FROM continuumio/miniconda3:latest
+# Use a slim Python base image with uv for fast dependency installation
+FROM python:3.10-slim
 
-# prepare conda
-RUN conda update conda
-RUN conda update --all
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Update Conda and create the environment
-COPY ./build/environment.yml /app/
-RUN conda env create -f environment.yml
+# Install dependencies from pyproject.toml
+COPY pyproject.toml /app/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system .
 
 # Copy the app code and files to the container
 COPY app_envfiles /app/app_envfiles
 COPY src /app/src
 
-# # Expose any necessary ports (if applicable)
-# EXPOSE 80
-
 ENV PYTHONUNBUFFERED=1
 
 # Define the command to run your app in release mode (so log level is INFO)
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa", "python", "-O", "src/slack.py"]
+ENTRYPOINT ["python", "-O", "src/slack.py"]

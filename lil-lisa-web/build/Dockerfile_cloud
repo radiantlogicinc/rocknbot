@@ -1,22 +1,21 @@
-FROM continuumio/miniconda3:latest
+# Use a slim Python base image with uv for fast dependency installation
+FROM python:3.11-slim
 
-# Update conda
-RUN conda update conda && conda update --all
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Set the working directory
 WORKDIR /app
 
-# Copy the new environment file from the build directory into /app
-# (The build context is the project root, so "build/environment.yml" is the correct path.)
-COPY build/environment.yml /app/
-
-# Create the conda environment using the new environment file (which now includes gunicorn)
-RUN conda env create -f environment.yml
+# Install dependencies including gunicorn (prod extra)
+COPY pyproject.toml /app/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system ".[prod]"
 
 # Copy application code, templates and environment variable file from the root directory
 COPY main.py /app/
 COPY templates/ /app/templates/
-COPY ./build/lil-lisa-web.env /app/
+COPY build/lil-lisa-web.env /app/
 
 # Ensure logs are unbuffered (important for production logging)
 ENV PYTHONUNBUFFERED=1
@@ -24,6 +23,5 @@ ENV PYTHONUNBUFFERED=1
 # Expose the port so cloud platforms can route traffic
 EXPOSE 8080
 
-# Use gunicorn as the production server.
-# "main:app" tells gunicorn to import the Flask app object (named "app") from main.py.
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa-web", "gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "120", "main:app"]
+# Use gunicorn as the production server
+ENTRYPOINT ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "120", "main:app"]

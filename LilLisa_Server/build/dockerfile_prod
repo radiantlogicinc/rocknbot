@@ -1,22 +1,23 @@
-# Use a base image with Python and required dependencies
-FROM continuumio/miniconda3:latest AS builder
+# Stage 1: Build dependencies with uv
+FROM python:3.11-slim AS builder
 
-# RUN apt-get update && \
-#     apt-get upgrade -y && \
-#     apt-get install -y git
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
-# prepare conda
-RUN conda update conda
-RUN conda update --all
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Update Conda and create the environment
-COPY ./build/environment.yml /app/
-RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
-    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
-RUN conda env create -f environment.yml
+# Install PyTorch with CUDA support (large, cached separately)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system torch --index-url https://download.pytorch.org/whl/cu126
+
+# Install remaining dependencies from pyproject.toml
+COPY pyproject.toml /app/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cu126 .
 
 # Copy the app code and files to the container
 COPY data /app/data
@@ -26,14 +27,15 @@ RUN mkdir speedict
 
 ENV PYTHONUNBUFFERED=1
 
-# Set the CMD to your handler
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "LilLisa_Server", "uvicorn", "src.main:app", "--host=0.0.0.0"]
-
+# Stage 2: Minimal production image
 FROM chainguard/wolfi-base:latest
 RUN apk update && apk add git libstdc++
-COPY --from=builder /opt/conda/envs/LilLisa_Server /usr/local/env
+COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
+COPY --from=builder /usr/local/bin/python3.11 /usr/local/bin/python3.11
+COPY --from=builder /usr/local/bin/python3 /usr/local/bin/python3
+COPY --from=builder /usr/local/bin/uvicorn /usr/local/bin/uvicorn
 COPY --from=builder /app /app
-ENV PATH="/usr/local/env/bin:$PATH"
+ENV PATH="/usr/local/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
-ENTRYPOINT ["python","-m","uvicorn", "src.main:app", "--host=0.0.0.0"]
+ENTRYPOINT ["python3", "-m", "uvicorn", "src.main:app", "--host=0.0.0.0"]

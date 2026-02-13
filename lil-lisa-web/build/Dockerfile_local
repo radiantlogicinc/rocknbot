@@ -1,16 +1,16 @@
-FROM continuumio/miniconda3:latest
+# Use a slim Python base image with uv for fast dependency installation
+FROM python:3.11-slim
 
-# Prepare conda
-RUN conda update conda && conda update --all
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Set the working directory
 WORKDIR /app
 
-# Copy the environment file (environment.yml) from the correct location
-COPY environment.yml /app/
-
-# Create the conda environment
-RUN conda env create -f environment.yml
+# Install dependencies from pyproject.toml
+COPY pyproject.toml /app/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system .
 
 # Copy your web server code and templates directory
 COPY templates/ /app/templates/
@@ -22,5 +22,5 @@ COPY lil-lisa-web.env /app/
 # Ensure logs are unbuffered
 ENV PYTHONUNBUFFERED=1
 
-# Run your web server using conda run with no-capture-output
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa-web", "python", "main.py"]
+# Run your web server
+ENTRYPOINT ["python", "main.py"]

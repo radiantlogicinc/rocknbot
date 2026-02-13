@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import os
+import random
 import re
 import shutil
 import sys
@@ -32,6 +33,7 @@ from fastapi.responses import (
     JSONResponse
 )
 from litellm import completion
+from pydantic import ConfigDict
 from llama_index.core import (
     Document,
     Settings,
@@ -48,7 +50,6 @@ from llama_index.core.tools import FunctionTool
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI as OpenAI_Llama
-from pydantic import Extra
 from speedict import Rdict
 
 import lancedb
@@ -74,7 +75,7 @@ from src.llama_index_markdown_reader import MarkdownReader
 from src import observability
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-logging.getLogger("LiteLLM").setLevel(logging.INFO)
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("LiteLLM").handlers.clear()
 
 # -----------------------------------------------------------------------------
@@ -106,6 +107,25 @@ CURRENT_CHUNKING_STRATEGY = ChunkingStrategy.CONTEXTUAL  # Current active chunki
 # Voyage AI configuration
 VOYAGE_EMBEDDING_DIMENSION = 2048  # Embedding dimension for Voyage AI model
 
+# Humorous placeholder messages streamed as "thinking" indicators while the pipeline runs
+THINKING_MESSAGES = [
+    "Hmm interesting...",
+    "Crunching bits...",
+    "Brain buffering...",
+    "Consulting oracles...",
+    "Summoning wisdom...",
+    "Dusting archives...",
+    "Neurons tingling...",
+    "Almost there...",
+    "Mining gold...",
+    "Magic brewing...",
+    "Gears turning...",
+    "Thinking hard...",
+    "Plot thickening...",
+    "Scanning galaxies...",
+    "Brewing answers...",
+]
+
 
 # -----------------------------------------------------------------------------
 # Embedding Configuration Functions
@@ -121,7 +141,7 @@ def configure_embedding_model(chunking_strategy: ChunkingStrategy):
             backoff_factor=2.0,
             embed_batch_size=4  # Default is 10, reducing to spread out API calls
         )
-        utils.logger.info("Configured OpenAI text-embedding-3-large for traditional chunking")
+        utils.logger.debug("Configured OpenAI text-embedding-3-large for traditional chunking")
     elif chunking_strategy == ChunkingStrategy.CONTEXTUAL:
         # Voyage contextual chunking
         Settings.embed_model = VoyageEmbedding(
@@ -200,7 +220,7 @@ def detect_lancedb_chunking_strategy(lancedb_folderpath: str) -> Optional[Chunki
                             else:
                                 continue
                         
-                        utils.logger.info(f"Detected embedding dimension {dimension} in table {table_name}")
+                        utils.logger.debug(f"Detected embedding dimension {dimension} in table {table_name}")
                         
                         # Map dimensions to chunking strategies
                         if dimension == 3072:  # OpenAI text-embedding-3-large
@@ -227,11 +247,13 @@ def set_chunking_strategy(strategy: ChunkingStrategy):
     global CURRENT_CHUNKING_STRATEGY
     CURRENT_CHUNKING_STRATEGY = strategy
     configure_embedding_model(strategy)
-    utils.logger.info(f"Switched to {strategy.value} chunking strategy")
+    utils.logger.debug(f"Switched to {strategy.value} chunking strategy")
 
 import warnings
 # Suppress the specific FutureWarning from torch
 warnings.filterwarnings("ignore", category=FutureWarning, module='torch.nn.modules.module')
+# Suppress Pydantic serializer warnings from LiteLLM completion response (Message/Choices) - known litellm issue
+warnings.filterwarnings("ignore", message="Pydantic serializer warnings", category=UserWarning)
 
 # -----------------------------------------------------------------------------
 # Custom LLM Implementation
@@ -239,8 +261,7 @@ warnings.filterwarnings("ignore", category=FutureWarning, module='torch.nn.modul
 class LiteLLM(LLM):
     """Custom LLM implementation using LiteLLM's completion API."""
 
-    class Config:
-        extra = 'allow'
+    model_config = ConfigDict(extra="allow")
 
     def __init__(self, model=LLM_MODEL, callback_manager=None, system_prompt=None, **kwargs):
         super().__init__(callback_manager=callback_manager, system_prompt=system_prompt, **kwargs)
@@ -462,20 +483,25 @@ async def lifespan(_app: FastAPI):
         utils.logger.critical("LLM_MODEL not found in lillisa_server.env")
         raise ValueError("LLM_MODEL not found in lillisa_server.env")
 
-    # Load documentation versions
+    # Load documentation versions (required)
     for key, var in [
         ("DOCUMENTATION_NEW_VERSIONS", "DOCUMENTATION_NEW_VERSIONS"),
         ("DOCUMENTATION_EOC_VERSIONS", "DOCUMENTATION_EOC_VERSIONS"),
         ("DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS", "DOCUMENTATION_IDENTITY_ANALYTICS_VERSIONS"),
         ("DOCUMENTATION_IA_PRODUCT_VERSIONS", "DOCUMENTATION_IA_PRODUCT_VERSIONS"),
         ("DOCUMENTATION_IA_SELFMANAGED_VERSIONS", "DOCUMENTATION_IA_SELFMANAGED_VERSIONS"),
-        ("DOCUMENTATION_IDO_VERSIONS", "DOCUMENTATION_IDO_VERSIONS"),
     ]:
         if value := lillisa_server_env.get(key):
             globals()[var] = str(value).split(", ")
         else:
             utils.logger.critical("%s not found in lillisa_server.env", key)
             raise ValueError(f"{key} not found in lillisa_server.env")
+
+    # Load IDO documentation versions (optional — IDO functionality is disabled if not set)
+    if value := lillisa_server_env.get("DOCUMENTATION_IDO_VERSIONS"):
+        globals()["DOCUMENTATION_IDO_VERSIONS"] = str(value).split(", ")
+    else:
+        utils.logger.warning("DOCUMENTATION_IDO_VERSIONS not found in lillisa_server.env — IDO doc rebuild will be disabled")
 
     if LLM_API_KEY_FILEPATH := lillisa_server_env.get("LLM_API_KEY_FILEPATH"):
         if not os.path.exists(LLM_API_KEY_FILEPATH):
@@ -519,7 +545,7 @@ async def lifespan(_app: FastAPI):
         detected_strategy = detect_lancedb_chunking_strategy(LANCEDB_FOLDERPATH)
     
     if detected_strategy:
-        utils.logger.info(f"Detected existing LanceDB with {detected_strategy.value} chunking strategy")
+        utils.logger.debug(f"Detected existing LanceDB with {detected_strategy.value} chunking strategy")
         set_chunking_strategy(detected_strategy)
     else:
         utils.logger.info(f"No existing LanceDB detected or unable to determine chunking strategy, using {CURRENT_CHUNKING_STRATEGY.value} chunking as default")
@@ -676,27 +702,6 @@ async def invoke_stream_with_nodes(
                 yield f"ANS: {chunk}\n"
         return StreamingResponse(expert_gen(), media_type="text/html",headers=custom_headers)
 
-    # Build agent with tools including answer_from_document_retrieval
-    conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
-    tools = [
-        FunctionTool.from_defaults(fn=improve_query),
-        FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
-        FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
-    ]
-    llm = LiteLLM(model=LLM_MODEL)
-    react_agent = StreamingReActAgent.from_tools(
-        tools=tools,
-        llm=llm,
-        verbose=(utils.LOG_LEVEL == utils.logging.DEBUG),
-        max_iterations=MAX_ITERATIONS,
-    )
-    prompt = (
-        REACT_AGENT_PROMPT
-        .replace("<PRODUCT>", product)
-        .replace("<CONVERSATION_HISTORY>", conversation_history)
-        .replace("<QUERY>", nl_query)
-    )
-
     def format_to_html(t: str) -> str:
         escaped = html.escape(t)
         escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
@@ -707,26 +712,6 @@ async def invoke_stream_with_nodes(
         )
         
         return escaped.replace("\n", "<br>")
-
-    def chunk_text(text: str, max_length: int) -> list[str]:
-        words = text.split()
-        chunks = []
-        current_chunk = ""
-        for word in words:
-            if len(word) > max_length:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                    current_chunk = ""
-                chunks.append(word)
-                continue
-            if len(current_chunk) + len(word) + 1 > max_length:
-                chunks.append(current_chunk.strip())
-                current_chunk = f"{word} "
-            else:
-                current_chunk += f"{word} "
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-        return chunks
 
     def html_chunk_text(html_text: str) -> list[str]:
         br_pattern = r'<br\s*/?>'
@@ -747,78 +732,82 @@ async def invoke_stream_with_nodes(
                 chunks.append(current_br + html_text[current_match.end():next_match.start()])
         return chunks
 
+    # Deterministic pipeline: run retrieval in background, stream thinking messages
+    def _run_pipeline():
+        """Run the deterministic retrieval pipeline in a background thread."""
+        t0 = time.perf_counter()
+        conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
+        # Conditionally improve query if there is prior conversation context
+        improved_query = ""
+        if len(llsc.conversation_history) > 1 and conversation_history.strip():
+            improved_query = improve_query(nl_query, conversation_history)
+        result = answer_from_document_retrieval(
+            product=product,
+            original_query=nl_query,
+            generated_query=improved_query,
+            conversation_history=conversation_history
+        )
+        utils.logger.debug("PERF | streaming_pipeline_total | %.3fs", time.perf_counter() - t0)
+        return result
+
     async def streamer() -> AsyncGenerator[str, None]:
         yield f"QUERY_ID: {query_id}\n"
 
-        for phase, text in react_agent.stream_chat(prompt):
-            if phase == "cot":
-                chunks = chunk_text(text, 50)
-                for chunk in chunks:
-                    yield f"COT: {format_to_html(chunk)}\n"
-                    await asyncio.sleep(0.5)
-            elif phase == "ans":
-                try:
-                    response_dict = json.loads(text)
-                    response_text = response_dict.get("response", text)
-                    nodes = response_dict.get("reranked_nodes", [])
-                except json.JSONDecodeError:
-                    response_text = text
-                    nodes = []
+        # Start the pipeline in a background thread
+        loop = asyncio.get_event_loop()
+        pipeline_task = loop.run_in_executor(None, _run_pipeline)
 
-                html_answer = format_to_html(response_text)
-                chunks = html_chunk_text(html_answer)
-                for chunk in chunks:
-                    yield f"ANS: {chunk}\n"
-                if nodes:
-                    yield f"NODES: {json.dumps(nodes)}\n"
-                    # Store the nodes in the context for later use in record_endorsement
-                    if not hasattr(llsc, 'query_artifacts'):
-                        llsc.query_artifacts = {}
-                    if query_id not in llsc.query_artifacts:
-                        llsc.query_artifacts[query_id] = {}
-                    llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
-                    llsc.save_context()  # Save the updated context
-                else:
-                    # If no nodes from response, check stored nodes in context
-                    if hasattr(llsc, "query_artifacts") and query_id in llsc.query_artifacts:
-                        stored_nodes = llsc.query_artifacts[query_id].get("reranked_nodes", [])
-                        if stored_nodes:
-                            yield f"NODES: {json.dumps(stored_nodes)}\n"
+        # Stream random thinking messages while the pipeline runs
+        used_indices = set()
+        while not pipeline_task.done():
+            available = [i for i in range(len(THINKING_MESSAGES)) if i not in used_indices]
+            if not available:
+                used_indices.clear()
+                available = list(range(len(THINKING_MESSAGES)))
+            idx = random.choice(available)
+            used_indices.add(idx)
+            yield f"COT: {THINKING_MESSAGES[idx]}\n"
+            await asyncio.sleep(1.5)
 
-                
-                llsc.add_to_conversation_history("Assistant", response_text, query_id)
-            elif phase == "fallback":
-                conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
-                raw = answer_from_document_retrieval(
-                    product=product,
-                    original_query=nl_query,
-                    generated_query=None,
-                    conversation_history=conversation_history
-                )
-                try:
-                    result = json.loads(raw)
-                    final_response = result["response"]
-                    nodes = result["reranked_nodes"]
-                except json.JSONDecodeError:
-                    final_response = raw
-                    nodes = []
+        # Get the result from the pipeline
+        try:
+            raw_response = pipeline_task.result()
+        except Exception as e:
+            utils.logger.error("Pipeline error in invoke_stream_with_nodes: %s", e)
+            yield f"ANS: An error occurred while processing your request. Please try again.\n"
+            return
 
-                html_answer = format_to_html(final_response)
-                chunks = html_chunk_text(html_answer)
-                for chunk in chunks:
-                    yield f"ANS: {chunk}\n"
-                if nodes:
-                    yield f"NODES: {json.dumps(nodes)}\n"
-                    if not hasattr(llsc, 'query_artifacts'):
-                        llsc.query_artifacts = {}
-                    if query_id not in llsc.query_artifacts:
-                        llsc.query_artifacts[query_id] = {}
-                    llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
-                    llsc.save_context()
+        # Parse response to extract text and nodes
+        try:
+            response_dict = json.loads(raw_response)
+            response_text = response_dict.get("response", raw_response)
+            nodes = response_dict.get("reranked_nodes", [])
+        except json.JSONDecodeError:
+            response_text = raw_response
+            nodes = []
 
-                llsc.add_to_conversation_history("Assistant", final_response, query_id)
+        # Stream the answer chunks
+        html_answer = format_to_html(response_text)
+        chunks = html_chunk_text(html_answer)
+        for chunk in chunks:
+            yield f"ANS: {chunk}\n"
 
-    return StreamingResponse(streamer(), media_type="text/html",headers=custom_headers)
+        # Stream nodes and store in context
+        if nodes:
+            yield f"NODES: {json.dumps(nodes)}\n"
+            # Store the nodes in the context for later use in record_endorsement
+            if not hasattr(llsc, 'query_artifacts'):
+                llsc.query_artifacts = {}
+            if query_id not in llsc.query_artifacts:
+                llsc.query_artifacts[query_id] = {}
+            llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
+            t0_save = time.perf_counter()
+            llsc.save_context()  # Save the updated context
+            utils.logger.debug("PERF | save_context | %.3fs", time.perf_counter() - t0_save)
+
+        llsc.add_to_conversation_history("Assistant", response_text, query_id)
+
+    return StreamingResponse(streamer(), media_type="text/html", headers=custom_headers)
 
 @app.post("/invoke/", response_model=dict, response_class=JSONResponse)
 def invoke(
@@ -883,37 +872,35 @@ def invoke(
                 "query_id": query_id
             },headers=custom_headers)
 
-        # Prepare agent with tools
+        # Deterministic pipeline: conditionally improve query, then retrieve
         conversation_history = "\n".join(f"{poster}: {message}" for poster, message, _ in llsc.conversation_history)
-        tools = [
-            FunctionTool.from_defaults(fn=improve_query),
-            FunctionTool.from_defaults(fn=answer_from_document_retrieval, return_direct=True),
-            FunctionTool.from_defaults(fn=handle_user_answer, return_direct=True),
-        ]
-        llm = LiteLLM(model=LLM_MODEL)
-        react_agent = ReActAgent.from_tools(
-            tools=tools,
-            llm=llm,
-            verbose=(utils.LOG_LEVEL == utils.logging.DEBUG),
-            max_iterations=MAX_ITERATIONS
-        )
-        react_agent_prompt = (
-            REACT_AGENT_PROMPT
-            .replace("<PRODUCT>", product)
-            .replace("<CONVERSATION_HISTORY>", conversation_history)
-            .replace("<QUERY>", nl_query)
-        )
 
-        # Get response from agent
-        response = react_agent.chat(react_agent_prompt).response
+        t0_pipeline = time.perf_counter()
+        # Step 1: Improve query if this is a follow-up with existing conversation context
+        improved_query = ""
+        if is_followup and conversation_history.strip():
+            t0_improve = time.perf_counter()
+            improved_query = improve_query(nl_query, conversation_history)
+            utils.logger.debug("PERF | invoke_improve_query | %.3fs", time.perf_counter() - t0_improve)
+
+        # Step 2: Retrieve documents and synthesize answer
+        t0_retrieval = time.perf_counter()
+        raw_response = answer_from_document_retrieval(
+            product=product,
+            original_query=nl_query,
+            generated_query=improved_query,
+            conversation_history=conversation_history
+        )
+        utils.logger.debug("PERF | invoke_document_retrieval | %.3fs", time.perf_counter() - t0_retrieval)
+        utils.logger.debug("PERF | invoke_pipeline_total | %.3fs", time.perf_counter() - t0_pipeline)
 
         # Parse response to extract text and nodes
         try:
-            response_dict = json.loads(response)
-            response_text = response_dict.get("response", response)
+            response_dict = json.loads(raw_response)
+            response_text = response_dict.get("response", raw_response)
             nodes = response_dict.get("reranked_nodes", [])
         except json.JSONDecodeError:
-            response_text = response
+            response_text = raw_response
             nodes = []
 
         # Add assistant and user response to conversation history
@@ -926,7 +913,9 @@ def invoke(
             if query_id not in llsc.query_artifacts:
                 llsc.query_artifacts[query_id] = {}
             llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
+            t0_save = time.perf_counter()
             llsc.save_context()
+            utils.logger.debug("PERF | save_context | %.3fs", time.perf_counter() - t0_save)
 
         # Return JSON response
         return JSONResponse(content={
@@ -938,36 +927,6 @@ def invoke(
     except HTTPException as exc:
         raise exc
     except Exception as exc:
-        if isinstance(exc, ValueError) and "Reached max iterations." in str(exc):
-            # 1) redo the retrieval + answer_tool so it writes into llsc.query_artifacts
-            raw = answer_from_document_retrieval(
-                product=product,
-                original_query=nl_query,
-                generated_query=None,
-                conversation_history=conversation_history
-            )
-            # parse its JSON
-            result = json.loads(raw)
-            final_response = result["response"]
-            nodes = result["reranked_nodes"]
-
-            if nodes:
-                if not hasattr(llsc, 'query_artifacts'):
-                    llsc.query_artifacts = {}
-                if query_id not in llsc.query_artifacts:
-                    llsc.query_artifacts[query_id] = {}
-                llsc.query_artifacts[query_id]["reranked_nodes"] = nodes
-                llsc.save_context()
-            
-            utils.logger.info("Returning retrieval result for session %s \n Query id: %s\n Response: %s", session_id, query_id, final_response)
-
-            llsc.add_to_conversation_history("Assistant", final_response, query_id)
-            
-            return {
-                "response": final_response,
-                "reranked_nodes": nodes,
-                "query_id": query_id
-            }
         utils.logger.critical("Internal error in invoke() for session_id: %s, nl_query: %s. Error: %s", session_id, nl_query, exc)
         raise HTTPException(status_code=500, detail=f"Internal error in invoke() for session_id: {session_id}") from exc
 
@@ -1010,10 +969,13 @@ async def add_expert_qa_pair(
                 "message": "Question and answer are required"
             })
         
-        if product not in ["IDA", "IDDM", "IDO"]:
+        valid_products = ["IDA", "IDDM"]
+        if IDO_PRODUCT_VERSIONS is not None:
+            valid_products.append("IDO")
+        if product not in valid_products:
             return JSONResponse(content={
                 "success": False,
-                "message": f"Invalid product '{product}'. Must be 'IDA' or 'IDDM' or 'IDO'"
+                "message": f"Invalid product '{product}'. Must be one of {valid_products}"
             })
         
         utils.logger.info(f"Adding expert QA pair for product {product}: Q='{question[:50]}...' A='{answer[:50]}...'")
@@ -1063,8 +1025,11 @@ async def _add_qa_pair_to_lancedb(question: str, answer: str, product: str):
     """
     try:
         # Validate product
-        if product not in ["IDA", "IDDM", "IDO"]:
-            raise ValueError(f"Invalid product '{product}'. Must be 'IDA' or 'IDDM' or 'IDO'")
+        valid_products = ["IDA", "IDDM"]
+        if IDO_PRODUCT_VERSIONS is not None:
+            valid_products.append("IDO")
+        if product not in valid_products:
+            raise ValueError(f"Invalid product '{product}'. Must be one of {valid_products}")
 
         # Create document from question
         doc = Document(text=question)
@@ -1284,6 +1249,10 @@ async def _run_update_golden_qa_pairs_task():
     """Contains the core logic for updating golden QA pairs, run as a background task."""
     for product_enum in PRODUCT:
         product = product_enum.value
+        # Skip IDO if not configured
+        if product == "IDO" and IDO_PRODUCT_VERSIONS is None:
+            utils.logger.info("Background task: Skipping IDO golden QA pair update — IDO is not configured.")
+            continue
         try:
             utils.logger.info(f"Background task: Starting golden QA pair update for {product}.")
 
@@ -1429,10 +1398,12 @@ async def _run_rebuild_docs_task_traditional():
                     DOCUMENTATION_IA_SELFMANAGED_VERSIONS,
                 ),
             ],
-            "IDO" : [
+        }
+        # IDO is optional — only include if configured
+        if DOCUMENTATION_IDO_VERSIONS:
+            product_repos_dict["IDO"] = [
                 ("https://github.com/radiantlogic-v8/documentation-ido.git", DOCUMENTATION_IDO_VERSIONS)
             ]
-        }
 
         def find_md_files(directory):
             return [
@@ -1725,10 +1696,12 @@ async def _run_rebuild_docs_task_contextual():
                     DOCUMENTATION_IA_SELFMANAGED_VERSIONS,
                 ),
             ],
-            "IDO" : [
+        }
+        # IDO is optional — only include if configured
+        if DOCUMENTATION_IDO_VERSIONS:
+            product_repos_dict["IDO"] = [
                 ("https://github.com/radiantlogic-v8/documentation-ido.git", DOCUMENTATION_IDO_VERSIONS)
             ]
-        }
 
         def find_md_files(directory):
             return [

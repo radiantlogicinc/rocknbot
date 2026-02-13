@@ -72,8 +72,8 @@ The project is not currently open for contributions.
 - Clone this project using this command:
   - git clone https://oauth2:&lt;YOUR_GITLAB_ACCESS_TOKEN&gt;@gitlab.com/radiant-logic-engineering/rl-datascience/lil-lisa.git
 - Navigate to lil-lisa folder
-- In the terminal, run "make _build-local". This will create a conda environment and install all necessary packages
-- Select 'lil-lisa' as python interpreter
+- In the terminal, run `make setup-env`. This creates a uv virtual environment (`.venv`) and installs all dependencies
+- Select `.venv` (lil-lisa/.venv/bin/python) as the Python interpreter in your IDE
 
 ### Environment Configuration
 

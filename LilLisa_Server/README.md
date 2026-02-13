@@ -17,9 +17,9 @@ LilLisa Server is able to grow its knowledge base and get better at answering us
 
 - Clone this project using this command:
   - git clone https://oauth2:&lt;YOUR_GITLAB_ACCESS_TOKEN&gt;@gitlab.com/radiant-logic-engineering/rl-datascience/lil-lisa.git
-- Navigate to lil-lisa folder
-- In the terminal, run "make condaenv". This will create a conda environment and install all necessary packages
-- Select 'lillisa-server' as python interpreter
+- Navigate to LilLisa_Server folder
+- In the terminal, run `make setup-env`. This creates a uv virtual environment (`.venv`) and installs all dependencies
+- Select `.venv` (LilLisa_Server/.venv/bin/python) as the Python interpreter in your IDE
 
 ## Usage
 
@@ -74,6 +74,9 @@ The project is not currently open for contributions.
 - Python 3.11.9 
 - RAM: 1.0 GB
 - Size of Docker container: 23.6 GB
+
+### Docker GPU Access
+For GPU-accelerated reranking: use `docker run --gpus all ...` (or equivalent in your orchestration) so the LilLisa_Server container can use the GPU.
 
 ### Pushing to Cloud
 

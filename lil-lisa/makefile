@@ -2,11 +2,11 @@ SHELL = /bin/bash
 
 APP_NAMESPACE=lil-lisa
 
-AWS_ACCOUNT = $(shell aws sts get-caller-identity --query 'Account' --output text)
-AWS_REGION = us-west-2#$(shell aws ec2 describe-availability-zones --query 'AvailabilityZones[0].RegionName' --output text)
+AWS_ACCOUNT ?= $(shell aws sts get-caller-identity --query 'Account' --output text 2>/dev/null)
+AWS_REGION ?= us-west-2
 
 IMAGE=lil-lisa
-TAG=2.3.1
+TAG=2.3.2
 
 .EXPORT_ALL_VARIABLES:
 
@@ -19,19 +19,22 @@ _wait30s:
 	@echo "lets wait 30 sec..."
 	sleep 30s
 
-condaenv:
-	conda env create -f environment.yml
-	conda activate ${APP_NAMESPACE}
+# Create uv venv under lil-lisa (replaces conda env)
+setup-env:
+	uv venv .venv
+	uv sync --extra dev
+
+# Use venv tools (run 'make setup-env' first)
+VENV_BIN = .venv/bin
 
 _lint:
-	py3clean .
-	isort .
-	black .
-	flake8 . --ignore E501,E122,W503,E402
-	pylint --recursive=y .
-	mypy --install-types --non-interactive .
-	mypy .
-	bandit -c pyproject.toml -r .
+	$(VENV_BIN)/isort .
+	$(VENV_BIN)/black .
+	$(VENV_BIN)/flake8 . --ignore E501,E122,W503,E402
+	$(VENV_BIN)/pylint --recursive=y .
+	$(VENV_BIN)/mypy --install-types --non-interactive .
+	$(VENV_BIN)/mypy .
+	$(VENV_BIN)/bandit -c pyproject.toml -r .
 
 _build-local:
 	docker build -f ./build/dockerfile_local -t ${IMAGE}-local:${TAG} .
@@ -43,8 +46,8 @@ build-local: _lint _build-local
 
 build-cloud: _lint _build-cloud
 
-update-env: environment.yml
-	conda env update --file environment.yml --prune
+update-env:
+	uv sync --extra dev
 
 run-local:
 	docker run -d --name=${IMAGE} ${IMAGE}-local:${TAG}

@@ -1,35 +1,28 @@
-# Use a base image with Python and required dependencies
-FROM continuumio/miniconda3:latest AS builder
+# Build stage: install dependencies with uv
+FROM python:3.10-slim AS builder
 
-# prepare conda
-RUN conda update conda
-RUN conda update --all
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Update Conda and create the environment
-COPY ./build/environment.yml /app/
-RUN conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
-    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
-RUN conda env create -f environment.yml
+COPY pyproject.toml /app/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system .
 
 COPY src /app/src
-RUN mkdir /app/app_envfiles
+RUN mkdir -p /app/app_envfiles
 RUN touch /app/app_envfiles/lil-lisa.env
 
-# # Expose any necessary ports (if applicable)
-# EXPOSE 80
-
 ENV PYTHONUNBUFFERED=1
 
-# Define the command to run your app in release mode (so log level is INFO)
-ENTRYPOINT ["conda", "run", "--no-capture-output", "-n", "lil-lisa", "python", "-O", "src/slack.py"]
+# Final stage: minimal runtime
+FROM python:3.10-slim
 
-FROM chainguard/wolfi-base:latest
-COPY --from=builder /opt/conda/envs/lil-lisa /usr/local/env
+COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 COPY --from=builder /app /app
-ENV PATH="/usr/local/env/bin:$PATH"
+
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
-ENTRYPOINT ["python","-O", "src/slack.py"]
+
+ENTRYPOINT ["python", "-O", "src/slack.py"]
