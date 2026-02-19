@@ -552,7 +552,7 @@ async def lifespan(_app: FastAPI):
         configure_embedding_model(CURRENT_CHUNKING_STRATEGY)
 
     # Validate LanceDB folder path
-    if not os.path.exists(LANCEDB_FOLDERPATH):
+    if not os.path.exists(LANCEDB_FOLDERPATH) or detected_strategy is None:
         await init_lance_databases()
     else:
         create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
