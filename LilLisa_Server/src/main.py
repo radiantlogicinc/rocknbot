@@ -242,6 +242,64 @@ def detect_lancedb_chunking_strategy(lancedb_folderpath: str) -> Optional[Chunki
         utils.logger.warning(f"Error detecting LanceDB chunking strategy: {e}")
         return None
 
+_REQUIRED_LANCEDB_TABLES = {"IDA", "IDDM", "IDA_QA_PAIRS", "IDDM_QA_PAIRS"}
+_STALE_INTERMEDIATE_SUFFIXES = ("_new",)
+
+
+def _validate_required_lancedb_tables(lancedb_folderpath: str) -> bool:
+    """Check that all required final LanceDB tables exist.
+
+    Returns True if every table in _REQUIRED_LANCEDB_TABLES is present,
+    False otherwise.
+    """
+    try:
+        db = lancedb.connect(lancedb_folderpath)
+        existing = set(db.table_names())
+        missing = _REQUIRED_LANCEDB_TABLES - existing
+        if missing:
+            utils.logger.warning(
+                "Required LanceDB tables missing: %s. A rebuild will be triggered.",
+                ", ".join(sorted(missing)),
+            )
+            return False
+        return True
+    except Exception as e:
+        utils.logger.warning("Error validating required LanceDB tables: %s", e)
+        return False
+
+
+def _cleanup_all_stale_lancedb_tables(lancedb_folderpath: str) -> None:
+    """Best-effort cleanup of all stale intermediate ``_new`` tables and directories.
+
+    Called on every startup so leftover state from a previously interrupted
+    rebuild never poisons a subsequent attempt.
+    """
+    try:
+        db = lancedb.connect(lancedb_folderpath)
+        for table_name in list(db.table_names()):
+            if any(table_name.endswith(suffix) for suffix in _STALE_INTERMEDIATE_SUFFIXES):
+                _cleanup_stale_lancedb_table(db, table_name)
+
+        # Also scan the directory for orphan .lance dirs whose table metadata
+        # may already have been removed but whose directory lingers on disk.
+        for entry in os.listdir(lancedb_folderpath):
+            if not entry.endswith(".lance"):
+                continue
+            table_name = entry[: -len(".lance")]
+            if any(table_name.endswith(suffix) for suffix in _STALE_INTERMEDIATE_SUFFIXES):
+                stale_path = os.path.join(lancedb_folderpath, entry)
+                if os.path.isdir(stale_path):
+                    utils.logger.info(
+                        "Cleaning up orphan stale directory %s on startup.", stale_path
+                    )
+                    shutil.rmtree(stale_path, ignore_errors=True)
+    except Exception as e:
+        # Never let cleanup prevent the server from starting
+        utils.logger.warning(
+            "Unexpected error during startup stale-table cleanup: %s", e, exc_info=True
+        )
+
+
 def set_chunking_strategy(strategy: ChunkingStrategy):
     """Set the current chunking strategy and update the embedding model."""
     global CURRENT_CHUNKING_STRATEGY
@@ -541,9 +599,15 @@ async def lifespan(_app: FastAPI):
 
     # Detect and configure appropriate chunking strategy based on existing LanceDB
     detected_strategy = None
-    if os.path.exists(LANCEDB_FOLDERPATH):
+    lancedb_exists = os.path.exists(LANCEDB_FOLDERPATH)
+
+    if lancedb_exists:
+        # Always clean up stale intermediate tables left by a previous
+        # interrupted rebuild, regardless of whether we take the fast path
+        # or trigger a full rebuild.
+        _cleanup_all_stale_lancedb_tables(LANCEDB_FOLDERPATH)
         detected_strategy = detect_lancedb_chunking_strategy(LANCEDB_FOLDERPATH)
-    
+
     if detected_strategy:
         utils.logger.debug(f"Detected existing LanceDB with {detected_strategy.value} chunking strategy")
         set_chunking_strategy(detected_strategy)
@@ -551,8 +615,17 @@ async def lifespan(_app: FastAPI):
         utils.logger.info(f"No existing LanceDB detected or unable to determine chunking strategy, using {CURRENT_CHUNKING_STRATEGY.value} chunking as default")
         configure_embedding_model(CURRENT_CHUNKING_STRATEGY)
 
-    # Validate LanceDB folder path
-    if not os.path.exists(LANCEDB_FOLDERPATH) or detected_strategy is None:
+    # Take the fast path (reuse existing tables) only when the folder exists,
+    # the chunking strategy was detected, AND every required table is present.
+    # Otherwise fall back to a full rebuild so partial state from a crashed
+    # startup never leaves the server in a broken state.
+    needs_rebuild = (
+        not lancedb_exists
+        or detected_strategy is None
+        or not _validate_required_lancedb_tables(LANCEDB_FOLDERPATH)
+    )
+
+    if needs_rebuild:
         await init_lance_databases()
     else:
         create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
