@@ -1337,7 +1337,7 @@ async def _run_update_golden_qa_pairs_task():
             splitter = SentenceSplitter(chunk_size=10000) # QA pairs are typically short, large chunk size is fine
             nodes = splitter.get_nodes_from_documents(documents=documents, show_progress=False) # Turn off progress for background task
 
-            vector_store = LanceDBVectorStore(uri="lancedb", table_name=table_name, query_type="hybrid")
+            vector_store = LanceDBVectorStore(connection=db, uri=LANCEDB_FOLDERPATH, table_name=table_name, query_type="hybrid")
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             utils.logger.info(f"Background task: Creating/updating index for {table_name} with {len(nodes)} nodes.")
             _ = VectorStoreIndex(nodes=nodes, storage_context=storage_context)
@@ -1602,6 +1602,15 @@ async def _run_rebuild_docs_task_traditional():
 
                 try:
                     product_new = f'{product}_new'
+
+                    # Drop stale intermediate table from any previous failed rebuild
+                    if product_new in db.table_names():
+                        utils.logger.info(f"Background task: Dropping stale intermediate table {product_new} from a previous run.")
+                        db.drop_table(product_new)
+                    productnew_stale_path = os.path.join(LANCEDB_FOLDERPATH, f"{product_new}.lance")
+                    if os.path.exists(productnew_stale_path):
+                        utils.logger.info(f"Background task: Removing stale intermediate directory {productnew_stale_path}.")
+                        shutil.rmtree(productnew_stale_path)
 
                     # Ensure there's at least one node before creating/inserting
                     if all_nodes:
@@ -1886,8 +1895,9 @@ async def _run_rebuild_docs_task_contextual():
                                 token_count = len(enc.encode(doc.text))
 
                                 # Check if document is too large for contextualized embedding
-                                # Voyage context-3 has a 32K token limit for the entire batch
-                                if token_count > 25000:  # Leave room for other docs in batch, split large documents
+                                # Voyage context-3 has a 32K token limit; tiktoken (GPT-3.5) underestimates
+                                # Voyage token counts, so we use a conservative threshold
+                                if token_count > 16000:
                                     utils.logger.info(f"Background task: Document {file_path} has {token_count} tokens, splitting...")
                                     # Use MarkdownNodeParser for proper markdown splitting
                                     node_parser = MarkdownNodeParser()
@@ -1896,9 +1906,9 @@ async def _run_rebuild_docs_task_contextual():
                                     final_nodes = []
                                     for node in nodes:
                                         node_tokens = len(enc.encode(node.text))
-                                        if node_tokens > 25000:  # Still too large even after markdown parsing
+                                        if node_tokens > 16000:  # Still too large even after markdown parsing
                                             # Use sentence splitter as fallback
-                                            large_splitter = SentenceSplitter(chunk_size=20000, chunk_overlap=0)
+                                            large_splitter = SentenceSplitter(chunk_size=12000, chunk_overlap=0)
                                             sub_nodes = large_splitter.get_nodes_from_documents(
                                                 [Document(text=node.text, metadata=node.metadata)]
                                             )
@@ -1926,7 +1936,8 @@ async def _run_rebuild_docs_task_contextual():
                                         utils.logger.error(f"Background task: Failed to generate embeddings for split file {file_path}: {e}")
                                 else:
                                     # Check if adding this document to the batch would exceed Voyage's 32K token limit
-                                    if batch_token_count + token_count > 30000:  # Stay under 32K limit with buffer
+                                    # tiktoken underestimates Voyage token counts, so use conservative threshold
+                                    if batch_token_count + token_count > 20000:
                                         # Process the current batch with cross-document context before adding this document
                                         if document_batch:
                                             try:
@@ -1934,9 +1945,10 @@ async def _run_rebuild_docs_task_contextual():
                                                 batch_texts = [doc.text for doc in document_batch]  # All docs in one list for context
                                                 
                                                 # Final validation of total token count before API call
+                                                # tiktoken underestimates Voyage token counts, so use conservative threshold
                                                 total_batch_tokens = sum(len(enc.encode(text)) for text in batch_texts)
-                                                if total_batch_tokens > 32000:
-                                                    utils.logger.warning(f"Background task: Batch exceeds 32K tokens ({total_batch_tokens}), processing documents individually")
+                                                if total_batch_tokens > 24000:
+                                                    utils.logger.warning(f"Background task: Batch exceeds 24K tiktoken tokens ({total_batch_tokens}), processing documents individually")
                                                     # Fall back to individual processing for this batch
                                                     for doc in document_batch:
                                                         try:
@@ -1992,9 +2004,10 @@ async def _run_rebuild_docs_task_contextual():
                                 batch_texts = [doc.text for doc in document_batch]  # All docs in one list for context
                                 
                                 # Final validation of total token count before API call
+                                # tiktoken underestimates Voyage token counts, so use conservative threshold
                                 total_batch_tokens = sum(len(enc.encode(text)) for text in batch_texts)
-                                if total_batch_tokens > 32000:
-                                    utils.logger.warning(f"Background task: Final batch exceeds 32K tokens ({total_batch_tokens}), processing documents individually")
+                                if total_batch_tokens > 24000:
+                                    utils.logger.warning(f"Background task: Final batch exceeds 24K tiktoken tokens ({total_batch_tokens}), processing documents individually")
                                     # Fall back to individual processing for this batch
                                     for doc in document_batch:
                                         try:
@@ -2045,6 +2058,16 @@ async def _run_rebuild_docs_task_contextual():
                 # Create vector store and index with new simplified approach
                 try:
                     product_new = f"{product}_new"
+
+                    # Drop stale intermediate table from any previous failed rebuild
+                    if product_new in db.table_names():
+                        utils.logger.info(f"Background task: Dropping stale intermediate table {product_new} from a previous run.")
+                        db.drop_table(product_new)
+                    productnew_stale_path = os.path.join(LANCEDB_FOLDERPATH, f"{product_new}.lance")
+                    if os.path.exists(productnew_stale_path):
+                        utils.logger.info(f"Background task: Removing stale intermediate directory {productnew_stale_path}.")
+                        shutil.rmtree(productnew_stale_path)
+
                     # Ensure there's at least one node before creating/inserting
                     if all_nodes:
                         utils.logger.info(f"Background task: Creating/updating index for {product_new} with {len(all_nodes)} nodes.")
