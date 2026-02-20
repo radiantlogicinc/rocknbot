@@ -1375,6 +1375,42 @@ async def update_golden_qa_pairs(product: str, encrypted_key: str, background_ta
     background_tasks.add_task(_run_update_golden_qa_pairs_task)
     return "Golden QA pair update initiated. Please wait for ~2 minutes before using Rocknbot"
 
+def _cleanup_stale_lancedb_table(db, table_name: str) -> None:
+    """Best-effort cleanup of a stale intermediate LanceDB table and its on-disk directory.
+
+    Failures are logged but never raised, so a failed cleanup cannot abort a rebuild.
+    """
+    try:
+        try:
+            if table_name in db.table_names():
+                utils.logger.info(
+                    f"Background task: Dropping stale intermediate table {table_name} from a previous run."
+                )
+                db.drop_table(table_name)
+        except Exception as e:
+            utils.logger.warning(
+                f"Background task: Failed to drop stale intermediate table {table_name}: {e}",
+                exc_info=True,
+            )
+
+        stale_path = os.path.join(LANCEDB_FOLDERPATH, f"{table_name}.lance")
+        if os.path.isdir(stale_path):
+            utils.logger.info(
+                f"Background task: Removing stale intermediate directory {stale_path}."
+            )
+            shutil.rmtree(stale_path, ignore_errors=True)
+        elif os.path.exists(stale_path):
+            utils.logger.warning(
+                f"Background task: Expected directory at {stale_path}, but found a non-directory path. Skipping removal."
+            )
+    except Exception as e:
+        # Catch-all so cleanup failures never abort the rebuild
+        utils.logger.warning(
+            f"Background task: Unexpected error during stale LanceDB cleanup for {table_name}: {e}",
+            exc_info=True,
+        )
+
+
 async def _run_rebuild_docs_task_traditional():
     """Contains the core logic for rebuilding docs using traditional chunking, run as a background task."""
     try:
@@ -1603,14 +1639,7 @@ async def _run_rebuild_docs_task_traditional():
                 try:
                     product_new = f'{product}_new'
 
-                    # Drop stale intermediate table from any previous failed rebuild
-                    if product_new in db.table_names():
-                        utils.logger.info(f"Background task: Dropping stale intermediate table {product_new} from a previous run.")
-                        db.drop_table(product_new)
-                    productnew_stale_path = os.path.join(LANCEDB_FOLDERPATH, f"{product_new}.lance")
-                    if os.path.exists(productnew_stale_path):
-                        utils.logger.info(f"Background task: Removing stale intermediate directory {productnew_stale_path}.")
-                        shutil.rmtree(productnew_stale_path)
+                    _cleanup_stale_lancedb_table(db, product_new)
 
                     # Ensure there's at least one node before creating/inserting
                     if all_nodes:
@@ -2059,14 +2088,7 @@ async def _run_rebuild_docs_task_contextual():
                 try:
                     product_new = f"{product}_new"
 
-                    # Drop stale intermediate table from any previous failed rebuild
-                    if product_new in db.table_names():
-                        utils.logger.info(f"Background task: Dropping stale intermediate table {product_new} from a previous run.")
-                        db.drop_table(product_new)
-                    productnew_stale_path = os.path.join(LANCEDB_FOLDERPATH, f"{product_new}.lance")
-                    if os.path.exists(productnew_stale_path):
-                        utils.logger.info(f"Background task: Removing stale intermediate directory {productnew_stale_path}.")
-                        shutil.rmtree(productnew_stale_path)
+                    _cleanup_stale_lancedb_table(db, product_new)
 
                     # Ensure there's at least one node before creating/inserting
                     if all_nodes:
