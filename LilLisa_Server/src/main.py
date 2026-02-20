@@ -1339,7 +1339,7 @@ async def _run_update_golden_qa_pairs_task():
                 utils.logger.error(f"Background task: Failed to clone QA pairs repo: {clone_exc}", exc_info=True)
                 if temp_qa_folder and os.path.exists(temp_qa_folder):
                     shutil.rmtree(temp_qa_folder)
-                return # Stop execution if clone fails
+                raise
 
             filepath = f"{temp_qa_folder}/{product.lower()}_qa_pairs.md"
 
@@ -1347,7 +1347,7 @@ async def _run_update_golden_qa_pairs_task():
                 utils.logger.error(f"Background task: QA pairs file not found at {filepath}")
                 if os.path.exists(temp_qa_folder):
                     shutil.rmtree(temp_qa_folder)
-                return # Stop execution if file doesn't exist
+                raise FileNotFoundError(f"QA pairs file not found at {filepath}")
 
             try:
                 with open(filepath, "r", encoding="utf-8") as file:
@@ -1356,7 +1356,7 @@ async def _run_update_golden_qa_pairs_task():
                 utils.logger.error(f"Background task: Failed to read QA pairs file {filepath}: {read_exc}", exc_info=True)
                 if os.path.exists(temp_qa_folder):
                     shutil.rmtree(temp_qa_folder)
-                return # Stop execution if read fails
+                raise
             finally:
                 # Clean up the temporary folder after reading or on error
                 if temp_qa_folder and os.path.exists(temp_qa_folder):
@@ -1376,7 +1376,7 @@ async def _run_update_golden_qa_pairs_task():
             qa_pairs = [pair.strip() for pair in file_content.split("# Question/Answer Pair") if pair.strip()]
             if not qa_pairs:
                 utils.logger.warning(f"Background task: No QA pairs found in the file for {product}. Skipping DB update.")
-                return
+                continue
 
             documents = []
             qa_pattern = re.compile(r"Question:\s*(.*?)\nAnswer:\s*(.*)", re.DOTALL)
@@ -1405,7 +1405,7 @@ async def _run_update_golden_qa_pairs_task():
 
             if not documents:
                 utils.logger.warning(f"Background task: No valid documents could be created from QA pairs for {product}. Skipping DB update.")
-                return
+                continue
 
             splitter = SentenceSplitter(chunk_size=10000) # QA pairs are typically short, large chunk size is fine
             nodes = splitter.get_nodes_from_documents(documents=documents, show_progress=False) # Turn off progress for background task
@@ -1429,7 +1429,11 @@ async def _run_update_golden_qa_pairs_task():
                 utils.logger.warning(f"Background task: Cleaning up temporary folder {temp_qa_folder} due to error.")
                 shutil.rmtree(temp_qa_folder)
 
-    create_qa_pairs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+    try:
+        create_qa_pairs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+    except Exception as e:
+        utils.logger.critical(f"Failed to create QA pairs retrievers/indices after update: {e}", exc_info=True)
+        raise
 
 @app.post("/update_golden_qa_pairs/", response_model=str, response_class=PlainTextResponse)
 async def update_golden_qa_pairs(product: str, encrypted_key: str, background_tasks: BackgroundTasks) -> str:
@@ -1749,7 +1753,7 @@ async def _run_rebuild_docs_task_traditional():
                         row_count = table.count_rows()
                         if row_count != len(all_nodes):
                             utils.logger.critical(f"Table '{product_new}' row count ({row_count}) does not match node count ({len(all_nodes)}).")
-                            return
+                            raise RuntimeError(f"Table '{product_new}' row count ({row_count}) does not match node count ({len(all_nodes)}).")
 
                         # Now drop the old database
                         if product in db.table_names():
@@ -1768,7 +1772,7 @@ async def _run_rebuild_docs_task_traditional():
                          utils.logger.warning(f"Background task: No nodes to index for product {product_new}.")
                 except Exception:
                     utils.logger.exception(f"Background task: Could not rebuild table {product_new}")
-                    return
+                    raise
 
         result_message = f"Rebuilt DB successfully with traditional chunking!{failed_clone_messages}" # This message is now only logged
         utils.logger.info(f"Background task: Documentation rebuild finished. Result: {result_message}")
@@ -1776,11 +1780,11 @@ async def _run_rebuild_docs_task_traditional():
     except jwt.exceptions.InvalidSignatureError:
         # Log the authentication error specifically
         utils.logger.error("Background task: Failed signature verification for rebuild_docs. Unauthorized.")
-        return
+        raise
     except Exception:
         # Log any other errors during the rebuild process
         utils.logger.exception("Background task: Documentation rebuild failed unexpectedly")
-        return
+        raise
 
     create_docdbs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
@@ -2192,7 +2196,7 @@ async def _run_rebuild_docs_task_contextual():
                         row_count = table.count_rows()
                         if row_count != len(all_nodes):
                             utils.logger.critical(f"Table '{product_new}' row count ({row_count}) does not match node count ({len(all_nodes)}).")
-                            return
+                            raise RuntimeError(f"Table '{product_new}' row count ({row_count}) does not match node count ({len(all_nodes)}).")
 
                     # Now drop the old database
                     if product in db.table_names():
@@ -2207,7 +2211,7 @@ async def _run_rebuild_docs_task_contextual():
                     utils.logger.info(f"Background task: Successfully inserted/updated nodes for {product_new}.")
                 except Exception:
                     utils.logger.exception(f"Background task: Could not rebuild table {product_new}")
-                    return
+                    raise
 
         result_message = f"Rebuilt DB successfully with contextual chunking!{failed_clone_messages}"  # This message is now only logged
         utils.logger.info(f"Background task: Documentation rebuild finished. Result: {result_message}")
@@ -2215,11 +2219,11 @@ async def _run_rebuild_docs_task_contextual():
     except jwt.exceptions.InvalidSignatureError:
         # Log the authentication error specifically
         utils.logger.error("Background task: Failed signature verification for rebuild_docs. Unauthorized.")
-        return
+        raise
     except Exception:
         # Log any other errors during the rebuild process
         utils.logger.exception("Background task: Documentation rebuild failed unexpectedly")
-        return
+        raise
 
     create_docdbs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
@@ -2245,7 +2249,7 @@ async def _run_complete_rebuild_traditional():
         set_chunking_strategy(ChunkingStrategy.TRADITIONAL)
         utils.logger.info("Complete traditional rebuild finished successfully")
     except Exception as e:
-        utils.logger.error(f"Complete traditional rebuild failed: {e}", exc_info=True)
+        utils.logger.critical(f"Complete traditional rebuild failed: {e}", exc_info=True)
         raise
 
 async def _run_complete_rebuild_contextual():
@@ -2260,7 +2264,7 @@ async def _run_complete_rebuild_contextual():
         set_chunking_strategy(ChunkingStrategy.CONTEXTUAL)
         utils.logger.info("Complete contextual rebuild finished successfully")
     except Exception as e:
-        utils.logger.error(f"Complete contextual rebuild failed: {e}", exc_info=True)
+        utils.logger.critical(f"Complete contextual rebuild failed: {e}", exc_info=True)
         raise
 
 

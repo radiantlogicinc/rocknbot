@@ -423,6 +423,10 @@ def answer_from_document_retrieval(
 
     product_enum = PRODUCT.get_product(product)
     if product_enum == PRODUCT.IDDM:
+        if IDDM_INDEX is None or IDDM_QA_PAIRS_INDEX is None:
+            elapsed = time.perf_counter() - t0_total
+            utils.logger.debug("PERF | answer_from_document_retrieval_total | %.3fs", elapsed)
+            return json.dumps({"response": "IDDM indices are not initialized. The server may have encountered an error during startup. Please contact an administrator.", "reranked_nodes": []})
         product_versions = IDDM_PRODUCT_VERSIONS
         version_pattern = re.compile(r"v?\d+\.\d+", re.IGNORECASE)
         document_index = IDDM_INDEX
@@ -442,6 +446,10 @@ def answer_from_document_retrieval(
         default_document_retriever = IDO_RETRIEVER
         default_qa_pairs_retriever = IDO_QA_PAIRS_RETRIEVER
     else:
+        if IDA_INDEX is None or IDA_QA_PAIRS_INDEX is None:
+            elapsed = time.perf_counter() - t0_total
+            utils.logger.debug("PERF | answer_from_document_retrieval_total | %.3fs", elapsed)
+            return json.dumps({"response": "IDA indices are not initialized. The server may have encountered an error during startup. Please contact an administrator.", "reranked_nodes": []})
         product_versions = IDA_PRODUCT_VERSIONS
         version_pattern = re.compile(r"\b(?:IAP[- ]\d+\.\d+|version[- ]\d+\.\d+|descartes(?:-dev)?)\b", re.IGNORECASE)
         document_index = IDA_INDEX
