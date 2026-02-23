@@ -1997,6 +1997,11 @@ async def _run_rebuild_docs_task_contextual():
                                     utils.logger.warning(f"Background task: Failed to create proper GitHub URL for {file_path}: {e}")
                                     doc.metadata["github_url"] = f"{repo_base}/blob/{branch}"
 
+                                # Skip documents with empty text — Voyage API rejects empty strings in inputs
+                                if not doc.text or not doc.text.strip():
+                                    utils.logger.warning(f"Background task: Skipping document with empty text: {file}")
+                                    continue
+
                                 # Calculate token count
                                 token_count = len(enc.encode(doc.text))
 
@@ -2021,6 +2026,11 @@ async def _run_rebuild_docs_task_contextual():
                                             final_nodes.extend(sub_nodes)
                                         else:
                                             final_nodes.append(node)
+                                    # Filter out empty nodes before API call — Voyage API rejects empty strings
+                                    final_nodes = [node for node in final_nodes if node.text and node.text.strip()]
+                                    if not final_nodes:
+                                        utils.logger.warning(f"Background task: All chunks empty after splitting {file_path}, skipping")
+                                        continue
                                     # Since this is a split file, process its chunks together in one API call
                                     try:
                                         chunk_texts = [node.text for node in final_nodes]
