@@ -71,7 +71,7 @@ Adds an expert-verified question and answer pair to the golden QA database. Call
 
 **/tag_techsupport_thread/**
 
-Records that a newly created tech support escalation thread relates to an existing verified tech support entry, so the nightly pipeline merges the new insight into that entry instead of adding a near duplicate. Stored in `scripts/techsupport_thread_tags.json`, which the pipeline only reads.
+Records that a newly created tech support escalation thread relates to an existing verified tech support entry, so the nightly pipeline merges the new insight into that entry instead of adding a near duplicate. Stored in `techsupport_thread_tags.json` in the tech support state folder, which the pipeline only reads.
 
 **/reload_techsupport_qa_pairs/**
 
@@ -89,7 +89,7 @@ Runs only the product-channel expert-correction pass immediately, as a backgroun
 
 `cron/nightly_pipeline.py` ships inside the server image and the API process runs it on a timer, so there is no crontab and no second container. Each run first scans the tech support channel for threads that reached a resolution and turns them into verified entries in `techsupport_qa_pairs.md` plus LanceDB. It then scans the IDA/IDDM/IDO product channels for threads where a member of that product's expert user group replied to one of Lil Lisa's answers. A thread with no expert reply never reaches an LLM call. If the answer in the thread cited an existing verified entry, the expert's reply rewrites that entry, keeping its title so its GitHub link stays valid; otherwise the thread is added as a new entry.
 
-State lives next to the scripts in `cron/`: `techsupport_sync_state.json` (per channel), `techsupport_review_state.json`, and `techsupport_reembed_state.json`. The API writes two tag files that the pipeline reads, `scripts/techsupport_thread_tags.json` and `scripts/techsupport_answer_tags.json`. All of those paths need persistent storage. Full ops detail, including the environment variables involved, is in "PR42 Release and Deployment Notes.md" at the root of this repo.
+Everything the pipeline writes lives in one state folder, `techsupport_state/`, beside the LanceDB folder: `techsupport_sync_state.json` (per channel), `techsupport_review_state.json`, `techsupport_reembed_state.json`, the two tag files the API writes and the pipeline reads (`techsupport_thread_tags.json` and `techsupport_answer_tags.json`), and `verified_techsupport/techsupport_qa_pairs.md`. With `LANCEDB_FOLDERPATH=/data/lancedb` that is `/data/techsupport_state/`, on the same persistent volume as the table, with no extra config. `TECHSUPPORT_STATE_DIR` and `VERIFIED_TECHSUPPORT_QA_FOLDERPATH` override the folder and the markdown location; neither is required. Full ops detail, including the environment variables involved, is in "PR42 Release and Deployment Notes.md" at the root of this repo.
 
 ## Contributing
 

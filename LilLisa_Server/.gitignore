@@ -12,11 +12,11 @@ env/*
 scripts/env/*
 !scripts/env/*.example
 
-# Escalation tags written by POST /tag_techsupport_thread/ (API process).
-# Cron jobs live in cron/ and read this same path.
-scripts/techsupport_thread_tags.json
-# Cited-entry tags written by invoke() at answer time (same reader).
-scripts/techsupport_answer_tags.json
+# Techsupport runtime state, beside the local lancedb/ folder: state JSON,
+# escalation tags written by POST /tag_techsupport_thread/ (API process),
+# cited-entry tags written by invoke() at answer time, and the verified
+# markdown. Cron jobs read these same paths (src/techsupport_state_paths.py).
+techsupport_state/
 
 # Ignore Docker ignore files
 # Exception: the image build now depends on .dockerignore to keep .venv and

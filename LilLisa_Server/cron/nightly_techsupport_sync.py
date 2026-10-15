@@ -78,6 +78,7 @@ from paths import (
     LILLISA_SERVER_ENV_PATH,
     LILLISA_SERVER_ROOT,
     PACKAGE_ROOT,
+    SYNC_STATE_PATH,
     ensure_import_paths,
 )
 
@@ -88,7 +89,7 @@ PROJECT_ROOT = LILLISA_SERVER_ROOT
 from atomic_io import atomic_write_json  # noqa: E402
 
 ENV_PATH = SCRIPT_DIR / "env" / "techsupport_sync.env"
-STATE_PATH = SCRIPT_DIR / "techsupport_sync_state.json"
+STATE_PATH = SYNC_STATE_PATH
 
 # Bump only for a shape change; load_state() rejects any other version.
 STATE_VERSION = 2

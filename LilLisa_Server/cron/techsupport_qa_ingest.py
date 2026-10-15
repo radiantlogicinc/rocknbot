@@ -125,7 +125,9 @@ from paths import (
     LILLISA_SERVER_ROOT,
     PACKAGE_ROOT,
     ANSWER_TAGS_PATH,
+    REVIEW_STATE_PATH,
     THREAD_TAGS_PATH,
+    VERIFIED_TECHSUPPORT_QA_FOLDERPATH,
     ensure_import_paths,
 )
 
@@ -163,12 +165,8 @@ logger = logging.getLogger(__name__)
 
 # Stand-in for a real dedicated GitHub repo (see FLAGGED OPEN ITEM above) --
 # override with VERIFIED_TECHSUPPORT_QA_FOLDERPATH env var once one exists.
-VERIFIED_TECHSUPPORT_QA_FOLDERPATH = Path(
-    os.environ.get(
-        "VERIFIED_TECHSUPPORT_QA_FOLDERPATH",
-        str(PROJECT_ROOT / "data" / "verified_techsupport"),
-    )
-)
+# VERIFIED_TECHSUPPORT_QA_FOLDERPATH comes from paths.py (default: the
+# verified_techsupport/ folder inside the techsupport state folder).
 
 # Single shared store across IDA/IDDM/IDO -- see module docstring.
 TECHSUPPORT_QA_MARKDOWN_FILENAME = "techsupport_qa_pairs.md"
@@ -194,7 +192,7 @@ TECHSUPPORT_QA_TABLE_NAME = "TECHSUPPORT_QA_PAIRS"
 # entry in place instead of creating a duplicate. Entries with no "thread_ts"
 # (added before this field existed, or added via some other path) can't be
 # located this way and are left alone by the replace pipeline.
-REVIEW_STATE_PATH = SCRIPT_DIR / "techsupport_review_state.json"
+# REVIEW_STATE_PATH is defined in paths.py (the techsupport state folder).
 
 # Local, git-ignored map of {thread_ts: related_entry_title}, written by
 # LilLisa_Server's /tag_techsupport_thread/ endpoint (called from lil-lisa's
@@ -204,7 +202,7 @@ REVIEW_STATE_PATH = SCRIPT_DIR / "techsupport_review_state.json"
 # nightly_pipeline.py consults to decide whether a freshly-classified thread
 # should be merged into that existing entry (enrich_verified_entry) instead
 # of added as a new one.
-# THREAD_TAGS_PATH is defined in paths.py (LilLisa_Server/scripts/).
+# THREAD_TAGS_PATH is defined in paths.py (the techsupport state folder).
 #
 # Its twin, ANSWER_TAGS_PATH (also paths.py), is the local, git-ignored map of
 # {session_id: cited_entry_title} that src/main.py's invoke() writes whenever

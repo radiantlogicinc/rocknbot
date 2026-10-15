@@ -289,7 +289,14 @@ def reload_techsupport_index() -> Dict[str, Any]:
     if not authentication_key:
         return {"reloaded": False, "reason": "AUTHENTICATION_KEY not found in lillisa_server.env"}
 
-    base_url = env.get("LIL_LISA_SERVER_URL", DEFAULT_LIL_LISA_SERVER_URL).rstrip("/")
+    # env.get(key, default) only falls back when the key is ABSENT. A key that is
+    # PRESENT but blank or whitespace-only -- LIL_LISA_SERVER_URL= in lillisa_server.env,
+    # or an empty string injected via the container environment, both trivially easy to
+    # produce in a Kubernetes manifest -- must behave the same as absent, or the POST
+    # below targets a bare path with no host and this reload silently fails, leaving
+    # freshly ingested entries invisible to live queries (pr42-44j.9).
+    raw_base_url = (env.get("LIL_LISA_SERVER_URL") or "").strip()
+    base_url = (raw_base_url or DEFAULT_LIL_LISA_SERVER_URL).rstrip("/")
     encrypted_key = jwt.encode({"some": "payload"}, authentication_key, algorithm="HS256")
 
     resp = requests.post(

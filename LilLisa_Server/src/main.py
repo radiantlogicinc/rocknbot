@@ -73,7 +73,12 @@ from src.lillisa_server_context import LOCALE, LilLisaServerContext
 from src.llama_index_lancedb_vector_store import LanceDBVectorStore
 from src.llama_index_markdown_reader import MarkdownReader
 
-from src.techsupport_thread_tags import THREAD_TAGS_LOCK, upsert_answer_tag, upsert_thread_tag
+from src.techsupport_thread_tags import (
+    DEFAULT_THREAD_TAGS_PATH,
+    THREAD_TAGS_LOCK,
+    upsert_answer_tag,
+    upsert_thread_tag,
+)
 from src import techsupport_cron
 from src import observability
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -555,6 +560,17 @@ async def lifespan(_app: FastAPI):
     else:
         create_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
 
+    # Fail fast on missing/broken techsupport pipeline config -- see
+    # cron/techsupport_preflight.py's module docstring for the staging incident this
+    # exists to prevent (a 100% dead pipeline with a healthy-looking rollout). Must run
+    # BEFORE start_scheduler() so a strict-mode BLOCKING problem aborts startup here
+    # (uvicorn exits non-zero, failing `kubectl rollout status`) rather than silently
+    # starting a scheduler whose first tick is doomed to fail the same way. Decision
+    # logic (raise vs. warn, strict vs. not, cron-package-unavailable handling) lives in
+    # techsupport_cron.run_startup_preflight(), which is unit-tested without importing
+    # this module (src.main) -- see tests/test_techsupport_cron_product_scan.py's
+    # docstring -- so this call site stays thin on purpose.
+    techsupport_cron.run_startup_preflight()
     pipeline_scheduler_task = techsupport_cron.start_scheduler()
 
     yield
@@ -1338,9 +1354,58 @@ async def run_product_channel_scan(encrypted_key: str, background_tasks: Backgro
     return "Product-channel expert-correction scan initiated. Progress and the run summary are in the server logs."
 
 
+@app.get("/health/techsupport_pipeline", response_class=JSONResponse)
+async def techsupport_pipeline_health() -> JSONResponse:
+    """
+    Startup/readiness probe for the in-process techsupport pipeline (see
+    cron/techsupport_preflight.py and src/techsupport_cron.py).
+
+    A liveness probe is the wrong tool here: the server itself stays alive and keeps
+    answering unrelated requests even when this pipeline is 100% dead -- that is exactly
+    the staging incident techsupport_preflight.py's module docstring describes, and a
+    liveness probe would just restart a pod that is alive but permanently misconfigured,
+    accomplishing nothing. Point a Kubernetes startupProbe/readinessProbe at this path
+    instead, so the rollout is gated on the pipeline's actual configuration.
+
+    Unauthenticated, unlike every other techsupport admin route in this file (which all
+    require encrypted_key): Kubernetes probes cannot practically present a JWT, and this
+    is only safe to expose without one because the payload is provably secret-free by
+    construction -- see techsupport_cron.preflight_health_payload(). Every field is a
+    stable CODE constant, a Severity name, a config KEY NAME, a filesystem PATH, a count,
+    or a boolean, and NEVER a value, which is the exact guarantee
+    cron/techsupport_preflight.py's PreflightProblem already makes for the fields this
+    payload serialises straight from.
+
+    Returns HTTP 503 when there is at least one BLOCKING problem (including the cron
+    package having failed to import entirely -- see preflight_health_payload()), EXCEPT
+    when the operator has explicitly set TECHSUPPORT_PREFLIGHT_STRICT=false. That
+    exception is not a nicety, it is the only thing that keeps the escape hatch usable:
+    under strict mode a BLOCKING problem present at boot means run_startup_preflight()
+    already refused to start, so this route was never reachable to answer at all, and the
+    one way to be serving traffic WITH a known BLOCKING problem is to have opted out.
+    Returning 503 there would let a startupProbe restart-loop the very pod the operator
+    deliberately chose to bring up degraded. The body still reports ok=false either way,
+    so alerting (which should read the body, not the status) loses nothing.
+
+    The 503 is still worth having for the case strict mode cannot cover: because
+    preflight_health_payload() re-runs the check per request, config that REGRESSES after
+    boot (a Secret rotated out from under a running pod) is caught here and correctly
+    fails readiness, even though no restart would have been triggered otherwise.
+
+    Returns 200 for DEGRADED-only or clean configuration: a degraded pipeline (e.g. no
+    GitHub mirror configured) still answers questions correctly and must not fail a
+    rollout over it.
+
+    Returns:
+        JSONResponse: see techsupport_cron.preflight_health_payload() for the body shape.
+    """
+    payload = techsupport_cron.preflight_health_payload()
+    return JSONResponse(status_code=techsupport_cron.health_status_code(payload), content=payload)
+
+
 # Written here by this API process. The cron/ jobs read the same path
 # (paths.THREAD_TAGS_PATH); do not move this file into the cron package.
-TECHSUPPORT_THREAD_TAGS_PATH = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "techsupport_thread_tags.json"
+TECHSUPPORT_THREAD_TAGS_PATH = DEFAULT_THREAD_TAGS_PATH
 
 
 def _require_jwt(encrypted_key: str) -> None:

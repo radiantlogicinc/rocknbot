@@ -41,7 +41,7 @@ from urllib.parse import urlsplit
 
 import git
 from dotenv import dotenv_values
-from paths import LILLISA_SERVER_ROOT, PACKAGE_ROOT, ensure_import_paths
+from paths import LILLISA_SERVER_ROOT, PACKAGE_ROOT, VERIFIED_TECHSUPPORT_QA_FOLDERPATH, ensure_import_paths
 
 ensure_import_paths()
 SCRIPT_DIR = PACKAGE_ROOT
@@ -52,13 +52,7 @@ ENV_PATH = SCRIPT_DIR / "env" / "github_push.env"
 # from it -- that module's top-level imports pull in the full LanceDB /
 # llama_index / voyageai runtime stack (and the server env setup that
 # requires), which this lightweight, standalone-runnable script has no need
-# for. Same env-var-override-with-default pattern as the original.
-VERIFIED_TECHSUPPORT_QA_FOLDERPATH = Path(
-    os.environ.get(
-        "VERIFIED_TECHSUPPORT_QA_FOLDERPATH",
-        str(PROJECT_ROOT / "data" / "verified_techsupport"),
-    )
-)
+# for. VERIFIED_TECHSUPPORT_QA_FOLDERPATH comes from the lightweight paths.py.
 TECHSUPPORT_QA_MARKDOWN_FILENAME = "techsupport_qa_pairs.md"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
