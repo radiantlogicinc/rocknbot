@@ -30,7 +30,7 @@ def _module_level_configure_calls(source: str) -> int:
 
 class LazyDspyConfigureTests(unittest.TestCase):
     def test_classifier_and_ingest_have_no_module_level_configure(self):
-        for name in ("techsupport_classifier.py", "techsupport_qa_ingest.py", "historical_import.py"):
+        for name in ("techsupport_classifier.py", "techsupport_qa_ingest.py"):
             source = (SCRIPTS_DIR / name).read_text(encoding="utf-8")
             self.assertEqual(_module_level_configure_calls(source), 0, msg=name)
 

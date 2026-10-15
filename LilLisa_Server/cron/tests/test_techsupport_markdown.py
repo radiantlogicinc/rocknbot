@@ -5,13 +5,11 @@ Run from LilLisa_Server/cron:
     PYTHONPATH=. python3 tests/test_techsupport_markdown.py
 """
 
-import subprocess
 import sys
 import unittest
 from pathlib import Path
 
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(SCRIPTS_DIR))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from techsupport_markdown import (  # noqa: E402
     parse_summary_markdown,
@@ -51,18 +49,6 @@ class SanitizeTechsupportMarkdownTests(unittest.TestCase):
         )
         self.assertEqual(title, "LDAP bind - 2")
         self.assertIn("  ## nested", summary)
-
-
-class HistoricalImportRetiredTests(unittest.TestCase):
-    def test_script_exits_before_running_import(self):
-        result = subprocess.run(
-            [sys.executable, str(SCRIPTS_DIR / "historical_import.py")],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("retired", result.stderr.lower())
 
 
 if __name__ == "__main__":
