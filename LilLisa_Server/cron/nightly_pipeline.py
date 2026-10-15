@@ -897,14 +897,21 @@ def run_product_channel_scan(force: bool = False) -> Dict[str, Any]:
     return {"product_channels": product_result, "errors": errors, **post_ingest}
 
 
-def run_pipeline() -> Dict[str, Any]:
+def run_pipeline(force: bool = False) -> Dict[str, Any]:
+    """Run the complete techsupport pipeline.
+
+    Scheduled runs preserve the normal per-channel interval gates. An operator
+    request uses ``force=True`` to collect the current techsupport and product
+    channel activity immediately, while retaining sync()'s thread-level
+    deduplication.
+    """
     slack_env = load_env()
     token = slack_env["SLACK_BOT_TOKEN"]
     channel_id = slack_env["TECHSUPPORT_CHANNEL_ID"]
     admin_channel_id = slack_env.get("ADMIN_CHANNEL_ID")
 
     sync_state_before = load_state()
-    if is_channel_check_due(channel_state(sync_state_before, channel_id)):
+    if force or is_channel_check_due(channel_state(sync_state_before, channel_id)):
         sync_result = sync()
     else:
         logger.info(
@@ -963,7 +970,7 @@ def run_pipeline() -> Dict[str, Any]:
             logger.exception("Thread %s: errored", thread_ts)
 
     try:
-        product_result = run_product_channel_pass(token, slack_env=slack_env, errors=errors)
+        product_result = run_product_channel_pass(token, slack_env=slack_env, errors=errors, force=force)
     except Exception as exc:  # noqa: BLE001 -- the product pass must not fail the whole run
         product_result = {"enabled": True, "products": {}, "totals": new_product_counts(), "error": str(exc)}
         logger.exception("Product-channel expert-correction pass errored")

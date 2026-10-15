@@ -90,12 +90,13 @@ def is_running() -> bool:
     return _run_lock.locked()
 
 
-def run_once() -> Dict[str, Any]:
+def run_once(force: bool = False) -> Dict[str, Any]:
     """Run the pipeline unless one is already in flight.
 
     Never raises: both callers (a FastAPI BackgroundTask and the tick) would
     otherwise drop the exception. run_pipeline() already posts per-step
-    failures to the admin Slack channel; this is the last-resort net.
+    failures to the admin Slack channel; this is the last-resort net. A manual
+    caller can set force=True to bypass per-channel interval gates.
     """
     global _last_config_failure_signature  # pylint: disable=global-statement
 
@@ -109,7 +110,7 @@ def run_once() -> Dict[str, Any]:
 
     try:
         utils.logger.info("Nightly techsupport pipeline starting (cron root: %s)", CRON_ROOT)
-        summary = run_pipeline()
+        summary = run_pipeline(force=force)
         utils.logger.info("Nightly techsupport pipeline finished: %s", summary)
         _record_last_run(failed=False)
         # A successful run proves config is fine right now, so the NEXT failure (even an

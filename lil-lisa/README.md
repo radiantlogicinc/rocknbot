@@ -44,6 +44,10 @@ Retrieves QA pairs stored in the appropriate github repository
 
 Ingests changes made to the QA pairs github repository by deleting the previous LanceDB tables and recreating with up-to-date data
 
+**/run_nightly_pipeline**
+
+Starts the backend's techsupport pipeline in the background. It collects and classifies new techsupport threads, syncs expert corrections, reloads changed techsupport entries, and pushes changed verified markdown to GitHub. It is admin-only, returns immediately, and reports progress and the final summary in the backend logs.
+
 **/get_conversations [endorsed_by]**
 
 Retrieves conversations from a local folder that were endorsed by [endorsed_by]
@@ -105,6 +109,8 @@ The application now supports two different document chunking strategies:
 After deployment, you can switch between chunking strategies using slash commands:
 - Execute `/rebuild_docs_traditional` to rebuild the knowledge base using traditional chunking with OpenAI text-embedding-3-large
 - Execute `/rebuild_docs_contextual` to rebuild the knowledge base using contextual chunking with Voyage voyage-context-3
+
+Register `/run_nightly_pipeline` in the Slack app's Slash Commands settings so Slack delivers it to this Socket Mode bot. The command calls the backend's `/run_nightly_pipeline/` endpoint and therefore requires the backend's techsupport pipeline configuration to be present.
 
 ## Support
 

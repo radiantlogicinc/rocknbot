@@ -1304,7 +1304,7 @@ async def run_nightly_pipeline(encrypted_key: str, background_tasks: BackgroundT
     if techsupport_cron.is_running():
         return "Nightly techsupport pipeline is already running. This request was ignored."
 
-    background_tasks.add_task(techsupport_cron.run_once)
+    background_tasks.add_task(techsupport_cron.run_once, force=True)
     return "Nightly techsupport pipeline initiated. Progress and the run summary are in the server logs."
 
 

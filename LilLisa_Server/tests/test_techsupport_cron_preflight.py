@@ -358,6 +358,12 @@ class PreflightHealthPayloadTests(_ResetStateMixin, unittest.TestCase):
 class RuntimeNetDedupTests(_ResetStateMixin, unittest.TestCase):
     """pr42-44j.5: the hourly runtime net, and its log-spam guard."""
 
+    def test_manual_force_run_is_forwarded_to_the_pipeline(self):
+        with patch.object(techsupport_cron, "run_pipeline", return_value={"checked": 1}) as run_pipeline:
+            result = techsupport_cron.run_once(force=True)
+        self.assertTrue(result["ran"])
+        run_pipeline.assert_called_once_with(force=True)
+
     def test_run_once_never_raises_even_for_a_config_problem(self):
         with (
             patch.object(techsupport_cron, "run_pipeline", side_effect=RuntimeError("boom")),
