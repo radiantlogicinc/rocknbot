@@ -223,17 +223,13 @@ class PushFailureTests(unittest.TestCase):
 
 
 class TokenLookupTests(unittest.TestCase):
-    def test_qa_pairs_token_wins_over_github_token(self):
-        with mock.patch.dict(
-            "os.environ", {"QA_PAIRS_GITHUB_TOKEN": "qa-token", "GITHUB_TOKEN": "ts-token"}, clear=False
-        ):
-            self.assertEqual(golden_qa_sync.load_github_token(), "qa-token")
+    def test_uses_github_token(self):
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "ts-token"}, clear=False):
+            self.assertEqual(golden_qa_sync.load_github_token(), "ts-token")
 
-    def test_falls_back_to_github_token(self):
-        env = {"GITHUB_TOKEN": "ts-token"}
-        with mock.patch.dict("os.environ", env, clear=False):
-            with mock.patch.dict("os.environ", {"QA_PAIRS_GITHUB_TOKEN": ""}, clear=False):
-                self.assertEqual(golden_qa_sync.load_github_token(), "ts-token")
+    def test_blank_github_token_is_missing(self):
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "   "}, clear=False):
+            self.assertIsNone(golden_qa_sync.load_github_token())
 
 
 LOG_SAMPLE = """2026-09-01 10:00:00 INFO Some unrelated line

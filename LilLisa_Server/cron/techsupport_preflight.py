@@ -33,9 +33,9 @@ Why this exists -- the staging incident it prevents:
       files is a documented, supported deployment route, so a value present
       only in os.environ satisfies validation even with no .env file at all;
     * splits problems into two severity tiers (see Severity below), so that
-      the real staging failure (no Slack token: pipeline fully dead) becomes a
-      failed rollout in strict mode, while an existing production deployment
-      that simply never configured the optional GitHub mirror still boots;
+      a pipeline that cannot ingest, cannot push the verified markdown, or
+      cannot put clickable source links on answers becomes a failed rollout
+      in strict mode;
     * never echoes a value. Problems and the formatted report carry only KEY
       NAMES and filesystem PATHS -- no tokens, no os.environ dump, no URL that
       could contain credentials -- because this text goes straight into
@@ -90,8 +90,8 @@ from src.techsupport_state_paths import resolve_state_dir, resolve_verified_qa_d
 # alerts match on this exact string.
 FAILURE_CODE = "TECHSUPPORT_CONFIG_MISSING"
 # Emitted instead of FAILURE_CODE when every problem is DEGRADED, so a
-# production deployment that intentionally runs without the GitHub mirror does
-# not page on every boot through the FAILURE_CODE alert route.
+# deployment whose only gaps are a working default or a skipped product-channel
+# scan does not page on every boot through the FAILURE_CODE alert route.
 DEGRADED_CODE = "TECHSUPPORT_CONFIG_DEGRADED"
 
 STRICT_ENV_KEY = "TECHSUPPORT_PREFLIGHT_STRICT"
@@ -128,11 +128,9 @@ class Severity(str, Enum):
       ingest into LanceDB but never get the new rows reloaded into live
       retrieval). In strict mode any BLOCKING problem refuses startup -- this
       is the tier that turns the staging incident into a failed rollout.
-    DEGRADED: ingestion and retrieval still work; only the GitHub mirror of
-      techsupport_qa_pairs.md and the clickable source links in answers are
-      lost (or a working default is used). Always a warning, never fatal, so
-      an existing production deployment with no GitHub PAT still boots after
-      this preflight is introduced.
+    DEGRADED: the techsupport channel can still be ingested and served. What is
+      lost is a product-channel correction scan, or a setting that already has
+      a working default (LIL_LISA_SERVER_URL). Always a warning, never fatal.
     """
 
     BLOCKING = "BLOCKING"
@@ -498,26 +496,18 @@ def _check_server(lillisa: Mapping[str, str], lillisa_env_path: Path) -> List[Pr
 
 
 def _check_github(github: Mapping[str, str], github_env_path: Path) -> List[PreflightProblem]:
-    """Absent GitHub settings only lose the mirror + answer source links, so
-    they are DEGRADED -- an existing production deployment with no PAT must
-    still boot. A PRESENT but malformed GITHUB_REPO_URL is BLOCKING: it is an
-    operator mistake (possibly a token pasted into the URL) that would be
-    silently tolerated forever otherwise."""
+    """GITHUB_TOKEN and GITHUB_REPO_URL are BLOCKING. Without them the verified
+    markdown is never pushed and answers lose their clickable source links, so
+    a deployment that forgot github_push.env must fail the rollout rather than
+    serve. A present but malformed GITHUB_REPO_URL is the same tier: it is an
+    operator mistake (possibly a token pasted into the URL)."""
     problems: List[PreflightProblem] = []
     lost = "the GitHub mirror of techsupport_qa_pairs.md and the clickable source links in answers are disabled"
     if not _clean(github.get("GITHUB_TOKEN")):
-        problems.append(
-            _missing(
-                Severity.DEGRADED, "GITHUB_TOKEN", github_env_path, f"; {lost} (ingestion and retrieval still work)"
-            )
-        )
+        problems.append(_missing(Severity.BLOCKING, "GITHUB_TOKEN", github_env_path, f"; {lost}"))
     repo_url = _clean(github.get("GITHUB_REPO_URL"))
     if not repo_url:
-        problems.append(
-            _missing(
-                Severity.DEGRADED, "GITHUB_REPO_URL", github_env_path, f"; {lost} (ingestion and retrieval still work)"
-            )
-        )
+        problems.append(_missing(Severity.BLOCKING, "GITHUB_REPO_URL", github_env_path, f"; {lost}"))
     else:
         reason = _repo_url_problem(repo_url)
         if reason:

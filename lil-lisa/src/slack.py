@@ -1554,6 +1554,51 @@ async def update_golden_qa_pairs(ack, body, say):    # pylint: disable=too-many-
         return "An error occured"
 
 
+@app.command("/run_nightly_pipeline")
+async def run_nightly_pipeline(ack, body, say):
+    """Start the server's techsupport pipeline for an authorized administrator.
+
+    The server accepts the request immediately and runs the work in a
+    background task, so the bot can confirm promptly without waiting for Slack
+    collection, classification, embedding, or the GitHub push to finish.
+    """
+    await ack()
+    user_id = body.get("user_id")
+    direct_message_convo = await app.client.conversations_open(users=user_id)
+    dm_channel_id = direct_message_convo.data["channel"]["id"]
+    contains_user = (
+        await check_members(ADMIN_CHANNEL_ID_IDDM, user_id)
+        or await check_members(ADMIN_CHANNEL_ID_IDA, user_id)
+        or (ADMIN_CHANNEL_ID_IDO and await check_members(ADMIN_CHANNEL_ID_IDO, user_id))
+    )
+    if not contains_user:
+        await say(
+            text=(
+                "Unauthorized! Please contact one of the admins (@nico/@Dhar Rawal) and ask for "
+                "authorization. Once you are added to the appropriate admin Slack channel, you "
+                "will be able to use '/' commands to manage rocknbot."
+            ),
+        )
+        return
+
+    full_url = f"{BASE_URL}/run_nightly_pipeline/"
+    try:
+        response = await _requests_call(
+            requests.post,
+            full_url,
+            params={"encrypted_key": ENCRYPTED_AUTHENTICATION_KEY},
+            timeout=60,
+        )
+        response.raise_for_status()
+        await say(channel=dm_channel_id, text=response.text)
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.error("Unable to start nightly techsupport pipeline: %s", exc)
+        await say(
+            channel=dm_channel_id,
+            text="Unable to start the nightly techsupport pipeline. Check the server logs and configuration.",
+        )
+
+
 # @app.command("/rebuild_docs")
 # async def rebuild_docs(ack, body, say):
 #     """

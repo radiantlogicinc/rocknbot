@@ -21,12 +21,9 @@ The markdown format written here is exactly what the rebuild parser reads:
 
 Auth: the repo is cloned over HTTPS with the PAT supplied through GIT_ASKPASS
 -- never embedded in the URL, and with credential.helper= so nothing is
-persisted to disk. Token lookup order (each overlaid by os.environ, same
-precedence rule as cron/github_sync.load_env):
-    QA_PAIRS_GITHUB_TOKEN   - optional, use when the golden QA repo needs a
-                              different PAT than the techsupport repo
-    GITHUB_TOKEN            - the existing techsupport push PAT
-both read from LilLisa_Server/cron/env/github_push.env, then os.environ.
+persisted to disk. The same GITHUB_TOKEN that pushes the techsupport markdown
+(cron/github_sync.py) pushes here too. It is read from
+LilLisa_Server/cron/env/github_push.env, then overlaid by os.environ.
 
 Deliberately free of heavy imports (no lancedb / llama_index / torch) so it
 can be unit tested and driven from scripts/backfill_expert_qa_pairs.py
@@ -94,15 +91,13 @@ def parse_golden_qa_entries(file_content: str) -> List[Tuple[str, str]]:
 
 
 def load_github_token() -> Optional[str]:
-    """QA_PAIRS_GITHUB_TOKEN, else GITHUB_TOKEN, from cron/env/github_push.env
-    overlaid by os.environ (so a container secret beats a file placeholder)."""
+    """GITHUB_TOKEN from cron/env/github_push.env, overlaid by os.environ
+    (so a container secret beats a file placeholder). The same token pushes
+    the golden QA repo and the techsupport markdown repo."""
     env = dict(dotenv_values(str(GITHUB_PUSH_ENV_PATH)))
     env = {**env, **os.environ}
-    for key in ("QA_PAIRS_GITHUB_TOKEN", "GITHUB_TOKEN"):
-        token = (env.get(key) or "").strip()
-        if token:
-            return token
-    return None
+    token = (env.get("GITHUB_TOKEN") or "").strip()
+    return token or None
 
 
 def resolve_repo_url() -> Optional[str]:
@@ -134,7 +129,7 @@ def _needs_auth(repo_url: str) -> bool:
     if parts.username or parts.password:
         raise ValueError(
             "QA_PAIRS_GITHUB_REPO_URL must not include credentials; "
-            "set QA_PAIRS_GITHUB_TOKEN (or GITHUB_TOKEN) instead"
+            "set GITHUB_TOKEN instead"
         )
     return True
 
@@ -182,7 +177,7 @@ def cloned_repo(repo_url: Optional[str] = None, token: Optional[str] = None):
             token = token or load_github_token()
             if not token:
                 raise RuntimeError(
-                    "No GitHub token found -- set QA_PAIRS_GITHUB_TOKEN or GITHUB_TOKEN "
+                    "No GitHub token found -- set GITHUB_TOKEN "
                     f"in {GITHUB_PUSH_ENV_PATH} or the process environment"
                 )
             # Askpass lives next to the clone: git clone needs an empty target.

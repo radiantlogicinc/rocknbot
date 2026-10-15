@@ -261,12 +261,12 @@ class GithubTests(PreflightTestCase):
                 self.assertEqual(self.keys_by_severity(result, Severity.BLOCKING), {"GITHUB_REPO_URL"})
                 self.assertIn("credentials", self.find(result, "GITHUB_REPO_URL").problem)
 
-    def test_absent_github_settings_are_degraded_only(self):
+    def test_absent_github_settings_are_blocking(self):
         self.github = {"GITHUB_TOKEN": "", "GITHUB_REPO_URL": "  "}
         result = self.run_preflight()
-        self.assertTrue(result.ok)
-        self.assertEqual(result.blocking, ())
-        self.assertEqual(self.keys_by_severity(result, Severity.DEGRADED), {"GITHUB_TOKEN", "GITHUB_REPO_URL"})
+        self.assertFalse(result.ok)
+        self.assertEqual(self.keys_by_severity(result, Severity.BLOCKING), {"GITHUB_TOKEN", "GITHUB_REPO_URL"})
+        self.assertEqual(result.degraded, ())
 
     def test_absent_server_url_is_degraded(self):
         self.lillisa.pop("LIL_LISA_SERVER_URL")
@@ -276,7 +276,7 @@ class GithubTests(PreflightTestCase):
         self.assertIn("127.0.0.1", self.find(result, "LIL_LISA_SERVER_URL").problem)
 
     def test_degraded_only_report_uses_degraded_code_and_starts(self):
-        self.github = {}
+        self.lillisa.pop("LIL_LISA_SERVER_URL")
         report = preflight.format_preflight_report(self.run_preflight(), strict=True)
         self.assertIn(preflight.DEGRADED_CODE, report)
         self.assertNotIn(preflight.FAILURE_CODE, report)
@@ -500,13 +500,14 @@ class ReportFormatTests(PreflightTestCase):
         self.sync.pop("SLACK_BOT_TOKEN")
         self.sync.pop("TECHSUPPORT_CHANNEL_ID")
         self.github = {}
+        self.lillisa.pop("LIL_LISA_SERVER_URL")
         return self.run_preflight()
 
     def test_report_contents(self):
         result = self._broken()
         report = preflight.format_preflight_report(result, strict=True)
         self.assertTrue(report.startswith(f"{preflight.FAILURE_CODE}:"))
-        self.assertIn("4 problems", report)
+        self.assertIn("5 problems", report)
         self.assertIn("[BLOCKING]", report)
         self.assertIn("[DEGRADED]", report)
         self.assertIn(str(self.root / "cron" / "env" / "techsupport_sync.env"), report)
