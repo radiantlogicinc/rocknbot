@@ -95,11 +95,9 @@ class PreflightTestCase(unittest.TestCase):
             sync_env_path=self.root / "cron" / "env" / "techsupport_sync.env",
             github_env_path=self.root / "cron" / "env" / "github_push.env",
             lillisa_env_path=self.root / "env" / "lillisa_server.env",
+            # LANCEDB_FOLDERPATH=./lancedb resolves against this, so the state
+            # folder (techsupport_state/ beside it) is inside the tempdir too.
             server_root=self.root,
-            # The state files live in the cron package itself (/app/cron in the
-            # image), so point that at the tempdir rather than letting the
-            # writability check run against the real, writable cron directory.
-            package_root=self.root / "cron",
         )
         kwargs.update(overrides)
         return preflight.run_preflight(**kwargs)
@@ -120,16 +118,16 @@ class HappyPathTests(PreflightTestCase):
 
     def test_first_run_without_qa_table_or_markdown_passes(self):
         # A brand-new deployment has neither lancedb/ (so no
-        # TECHSUPPORT_QA_PAIRS table) nor data/verified_techsupport/ yet. Both
-        # are created by the first run, so their absence must not be a problem.
-        verified = self.root / "data" / "verified_techsupport"
+        # TECHSUPPORT_QA_PAIRS table) nor techsupport_state/ yet. Both are
+        # created by the first run, so their absence must not be a problem.
+        state_dir = self.root / "techsupport_state"
         self.assertFalse((self.root / "lancedb").exists())
-        self.assertFalse(verified.exists())
+        self.assertFalse(state_dir.exists())
         result = self.run_preflight()
         self.assertEqual(result.problems, ())
         # Preflight must not create them either -- it is side-effect free.
         self.assertFalse((self.root / "lancedb").exists())
-        self.assertFalse(verified.exists())
+        self.assertFalse(state_dir.exists())
 
 
 class BlockingKeyTests(PreflightTestCase):
@@ -374,56 +372,78 @@ class WritabilityTests(PreflightTestCase):
         self.assertEqual(self.keys_by_severity(result, Severity.BLOCKING), {"VERIFIED_TECHSUPPORT_QA_FOLDERPATH"})
 
     def test_unwritable_default_verified_folder_is_blocking(self):
-        # techsupport_qa_ingest's default when VERIFIED_TECHSUPPORT_QA_FOLDERPATH
-        # is unset: <server root>/data/verified_techsupport.
-        self.lock(self.root / "data" / "verified_techsupport")
+        # Default when VERIFIED_TECHSUPPORT_QA_FOLDERPATH is unset:
+        # <state dir>/verified_techsupport, the state dir being beside lancedb/.
+        verified = self.lock(self.root / "techsupport_state" / "verified_techsupport")
         problem = self.find(self.run_preflight(), "VERIFIED_TECHSUPPORT_QA_FOLDERPATH")
         self.assertIsNotNone(problem)
-        self.assertEqual(problem.path, str(self.root / "data" / "verified_techsupport"))
+        self.assertEqual(problem.path, str(verified))
 
     def test_unwritable_state_dir_is_blocking(self):
-        # Deployment notes section 5c: the state files are written next to the
-        # scripts, i.e. the cron package itself, which must be on a volume.
-        state_dir = self.lock(self.root / "cron")
+        state_dir = self.lock(self.root / "techsupport_state")
         result = self.run_preflight()
-        problem = self.find(result, "techsupport state directory")
+        problem = self.find(result, "TECHSUPPORT_STATE_DIR")
         self.assertIsNotNone(problem)
         self.assertIs(problem.severity, Severity.BLOCKING)
         self.assertEqual(problem.path, str(state_dir))
         self.assertIn("techsupport_sync_state.json", problem.remediation)
+        self.assertIn("TECHSUPPORT_STATE_DIR", problem.remediation)
 
-    def test_uncreatable_default_verified_folder_is_blocking(self):
-        """data/ itself read-only: the folder cannot be created on first run."""
-        self.lock(self.root / "data")
-        problem = self.find(self.run_preflight(), "VERIFIED_TECHSUPPORT_QA_FOLDERPATH")
+    def test_state_dir_follows_lancedb_folder(self):
+        """The default lives beside LANCEDB_FOLDERPATH, on the same volume."""
+        volume = self.lock(self.root / "volume")
+        self.lillisa["LANCEDB_FOLDERPATH"] = str(volume / "lancedb")
+        problem = self.find(self.run_preflight(), "TECHSUPPORT_STATE_DIR")
         self.assertIsNotNone(problem)
-        self.assertEqual(problem.path, str(self.root / "data" / "verified_techsupport"))
+        self.assertEqual(problem.path, str(volume / "techsupport_state"))
 
-    def test_verified_folder_override_comes_from_environ(self):
-        """techsupport_qa_ingest / github_sync read this key from os.environ
-        only, never from lillisa_server.env -- preflight must match, or it
-        would check a folder the pipeline does not actually use."""
-        locked = self.lock(self.root / "verified_locked")
-        self.lillisa["VERIFIED_TECHSUPPORT_QA_FOLDERPATH"] = str(locked)
-        self.assertIsNone(self.find(self.run_preflight(), "VERIFIED_TECHSUPPORT_QA_FOLDERPATH"))
-        self.environ = {"VERIFIED_TECHSUPPORT_QA_FOLDERPATH": str(locked)}
+    def test_state_dir_override_is_checked(self):
+        locked = self.lock(self.root / "state_locked")
+        self.environ = {"TECHSUPPORT_STATE_DIR": str(locked)}
         result = self.run_preflight()
+        # The default markdown folder sits inside the state folder, so it is flagged too.
         self.assertEqual(
             self.keys_by_severity(result, Severity.BLOCKING),
-            {"VERIFIED_TECHSUPPORT_QA_FOLDERPATH"},
+            {"TECHSUPPORT_STATE_DIR", "VERIFIED_TECHSUPPORT_QA_FOLDERPATH"},
         )
-        self.assertEqual(self.find(result, "VERIFIED_TECHSUPPORT_QA_FOLDERPATH").path, str(locked))
+        self.assertEqual(self.find(result, "TECHSUPPORT_STATE_DIR").path, str(locked))
+
+    def test_uncreatable_default_state_dir_is_blocking(self):
+        """The LanceDB folder's parent read-only: the state folder cannot be created on first run."""
+        volume = self.lock(self.root / "volume")
+        self.lillisa["LANCEDB_FOLDERPATH"] = str(volume / "lancedb")
+        result = self.run_preflight()
+        self.assertEqual(self.find(result, "TECHSUPPORT_STATE_DIR").path, str(volume / "techsupport_state"))
+        self.assertEqual(
+            self.find(result, "VERIFIED_TECHSUPPORT_QA_FOLDERPATH").path,
+            str(volume / "techsupport_state" / "verified_techsupport"),
+        )
+
+    def test_overrides_are_read_from_env_file_and_environ(self):
+        """The pipeline resolves both overrides from lillisa_server.env with the
+        process environment on top -- preflight must match, or it would check a
+        folder the pipeline does not actually use."""
+        from_file = self.lock(self.root / "from_file")
+        self.lillisa["VERIFIED_TECHSUPPORT_QA_FOLDERPATH"] = str(from_file)
+        self.assertEqual(self.find(self.run_preflight(), "VERIFIED_TECHSUPPORT_QA_FOLDERPATH").path, str(from_file))
+        from_environ = self.lock(self.root / "from_environ")
+        self.environ = {"VERIFIED_TECHSUPPORT_QA_FOLDERPATH": str(from_environ)}
+        self.assertEqual(
+            self.find(self.run_preflight(), "VERIFIED_TECHSUPPORT_QA_FOLDERPATH").path, str(from_environ)
+        )
 
     def test_all_writability_problems_reported_together(self):
         """All three writable-directory problems in one report, so the operator
         fixes one rollout instead of three."""
         self.lillisa["LANCEDB_FOLDERPATH"] = str(self.lock(self.root / "a"))
-        self.environ = {"VERIFIED_TECHSUPPORT_QA_FOLDERPATH": str(self.lock(self.root / "b"))}
-        self.lock(self.root / "cron")
+        self.environ = {
+            "VERIFIED_TECHSUPPORT_QA_FOLDERPATH": str(self.lock(self.root / "b")),
+            "TECHSUPPORT_STATE_DIR": str(self.lock(self.root / "c")),
+        }
         result = self.run_preflight()
         self.assertEqual(
             self.keys_by_severity(result, Severity.BLOCKING),
-            {"LANCEDB_FOLDERPATH", "VERIFIED_TECHSUPPORT_QA_FOLDERPATH", "techsupport state directory"},
+            {"LANCEDB_FOLDERPATH", "VERIFIED_TECHSUPPORT_QA_FOLDERPATH", "TECHSUPPORT_STATE_DIR"},
         )
         self.assertEqual(len(result.blocking), 3)
 
@@ -583,10 +603,14 @@ class PublicApiTests(unittest.TestCase):
         # importable and cheap at startup, which is why it re-states the
         # GITHUB_REPO_URL and channel-id rules instead of importing the modules
         # that own them (those drag in GitPython and requests).
+        # The one exception is the state-path resolver (and the env loader it
+        # reads), itself stdlib + dotenv only, so preflight checks the exact
+        # folders the pipeline writes to instead of a copy of that logic.
         heavy = ("fastapi", "lancedb", "llama_index", "voyageai", "dspy", "requests", "git", "src")
+        allowed = ("src", "src.utils", "src.techsupport_state_paths")
         code = (
             "import sys, techsupport_preflight; "
-            f"print(sorted(m for m in sys.modules if m.split('.')[0] in {heavy!r}))"
+            f"print(sorted(m for m in sys.modules if m.split('.')[0] in {heavy!r} and m not in {allowed!r}))"
         )
         out = subprocess.run(
             [sys.executable, "-c", code], cwd=str(SCRIPTS_DIR), capture_output=True, text=True, check=True

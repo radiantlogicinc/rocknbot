@@ -29,11 +29,21 @@ class PathsTests(unittest.TestCase):
             paths.LILLISA_SERVER_ROOT / "env" / "lillisa_server.env",
         )
 
-    def test_thread_tags_stay_on_the_server_tree(self):
-        self.assertEqual(
+    def test_runtime_files_share_the_state_dir(self):
+        for path in (
+            paths.SYNC_STATE_PATH,
+            paths.REEMBED_STATE_PATH,
+            paths.REVIEW_STATE_PATH,
             paths.THREAD_TAGS_PATH,
-            paths.LILLISA_SERVER_ROOT / "scripts" / "techsupport_thread_tags.json",
-        )
+            paths.ANSWER_TAGS_PATH,
+        ):
+            self.assertEqual(path.parent, paths.STATE_DIR)
+        self.assertEqual(paths.THREAD_TAGS_PATH.name, "techsupport_thread_tags.json")
+
+    def test_state_dir_is_off_the_code_tree(self):
+        # /app/cron, /app/scripts and /app/src are rebuilt from the image on every rollout.
+        for code_dir in ("cron", "scripts", "src"):
+            self.assertNotEqual(paths.STATE_DIR.parent, paths.LILLISA_SERVER_ROOT / code_dir)
 
 
 if __name__ == "__main__":

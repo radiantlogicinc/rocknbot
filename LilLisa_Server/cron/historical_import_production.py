@@ -4,7 +4,7 @@ historical_import_production.py
 One-time bulk import of data/historical_import/production_1year.txt (a real
 Slack export already threaded with slack_harvester.py's exact reply format --
 see the file structure check that preceded this script) into the SAME shared
-verified-techsupport store (data/verified_techsupport/techsupport_qa_pairs.md
+verified-techsupport store (VERIFIED_TECHSUPPORT_QA_FOLDERPATH/techsupport_qa_pairs.md
 + the TECHSUPPORT_QA_PAIRS LanceDB table) that nightly_pipeline.py maintains
 for live Slack threads.
 

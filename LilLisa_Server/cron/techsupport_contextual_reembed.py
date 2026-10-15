@@ -88,6 +88,8 @@ from paths import (
     LILLISA_SERVER_ENV_PATH,
     LILLISA_SERVER_ROOT,
     PACKAGE_ROOT,
+    REEMBED_STATE_PATH,
+    VERIFIED_TECHSUPPORT_QA_FOLDERPATH,
     ensure_import_paths,
 )
 
@@ -96,7 +98,7 @@ import lancedb
 ensure_import_paths()
 SCRIPT_DIR = PACKAGE_ROOT
 PROJECT_ROOT = LILLISA_SERVER_ROOT
-STATE_PATH = SCRIPT_DIR / "techsupport_reembed_state.json"
+STATE_PATH = REEMBED_STATE_PATH
 
 from github_anchor import compute_github_urls_for_titles  # noqa: E402
 
@@ -114,12 +116,7 @@ logger = logging.getLogger(__name__)
 
 # Same single shared store techsupport_qa_ingest.py (Step 6) writes to -- see
 # module docstring for why these are duplicated here instead of imported.
-VERIFIED_TECHSUPPORT_QA_FOLDERPATH = Path(
-    os.environ.get(
-        "VERIFIED_TECHSUPPORT_QA_FOLDERPATH",
-        str(PROJECT_ROOT / "data" / "verified_techsupport"),
-    )
-)
+# VERIFIED_TECHSUPPORT_QA_FOLDERPATH itself comes from paths.py.
 TECHSUPPORT_QA_MARKDOWN_FILENAME = "techsupport_qa_pairs.md"
 TECHSUPPORT_QA_TABLE_NAME = "TECHSUPPORT_QA_PAIRS"
 

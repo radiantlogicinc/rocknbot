@@ -18,8 +18,8 @@ Coordinated restore (do not skip):
     be restored together from the same point in time:
         1. LanceDB table TECHSUPPORT_QA_PAIRS (this script)
         2. techsupport_qa_pairs.md under VERIFIED_TECHSUPPORT_QA_FOLDERPATH
-           (typically LilLisa_Server/data/verified_techsupport/)
-        3. cron/techsupport_review_state.json
+           (by default techsupport_state/verified_techsupport/ next to the LanceDB folder)
+        3. techsupport_review_state.json in the techsupport state folder
     This script does NOT auto-restore markdown or review_state from Lance
     versions. After rollback_to_version(), it prints a reminder listing
     the files you must restore yourself (git history for the markdown;
@@ -56,6 +56,8 @@ from paths import (
     LILLISA_SERVER_ENV_PATH,
     LILLISA_SERVER_ROOT,
     PACKAGE_ROOT,
+    REVIEW_STATE_PATH,
+    VERIFIED_TECHSUPPORT_QA_FOLDERPATH,
     ensure_import_paths,
 )
 
@@ -97,10 +99,9 @@ def _print_coordinated_restore_reminder(restored_from_version: int) -> None:
     print("Restore together:")
     print(f"  1. LanceDB table {TECHSUPPORT_QA_TABLE_NAME}  (just done)")
     print("  2. techsupport_qa_pairs.md")
-    print("     (VERIFIED_TECHSUPPORT_QA_FOLDERPATH, typically")
-    print("      LilLisa_Server/data/verified_techsupport/techsupport_qa_pairs.md;")
+    print(f"     ({VERIFIED_TECHSUPPORT_QA_FOLDERPATH / 'techsupport_qa_pairs.md'};")
     print("      GitHub history in Section 7 of the deploy notes)")
-    print("  3. cron/techsupport_review_state.json")
+    print(f"  3. {REVIEW_STATE_PATH}")
     print("=" * 72)
 
 

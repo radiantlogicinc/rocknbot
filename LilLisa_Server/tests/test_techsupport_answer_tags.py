@@ -1,5 +1,6 @@
 """
-Unit tests for the answer-time tag store (scripts/techsupport_answer_tags.json):
+Unit tests for the answer-time tag store (techsupport_answer_tags.json in the
+techsupport state folder):
 {session_id (Slack thread ts): title of the verified techsupport entry the bot's
 answer cited}. invoke() writes it; the nightly product-channel pass reads it to
 route an expert reply to a correction instead of a new entry.
@@ -94,7 +95,7 @@ class AnswerTagsUpsertTests(unittest.TestCase):
     def test_default_path_is_its_own_store(self):
         self.assertNotEqual(DEFAULT_ANSWER_TAGS_PATH, DEFAULT_THREAD_TAGS_PATH)
         self.assertEqual(DEFAULT_ANSWER_TAGS_PATH.name, "techsupport_answer_tags.json")
-        self.assertEqual(DEFAULT_ANSWER_TAGS_PATH.parent.name, "scripts")
+        self.assertEqual(DEFAULT_ANSWER_TAGS_PATH.parent, DEFAULT_THREAD_TAGS_PATH.parent)
 
 
 if __name__ == "__main__":

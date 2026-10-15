@@ -1,4 +1,5 @@
-"""Read-modify-write helpers for the two techsupport tag stores under scripts/.
+"""Read-modify-write helpers for the two techsupport tag stores in the
+techsupport state folder (src/techsupport_state_paths.py).
 
 * techsupport_thread_tags.json  {escalation thread_ts: related entry title},
   written by POST /tag_techsupport_thread/ (an async route), so callers must
@@ -24,12 +25,13 @@ from pathlib import Path
 from typing import Dict
 
 from src.atomic_io import atomic_write_json
+from src.techsupport_state_paths import ANSWER_TAGS_PATH, THREAD_TAGS_PATH
 
 THREAD_TAGS_LOCK = asyncio.Lock()
 ANSWER_TAGS_LOCK = threading.Lock()
 
-DEFAULT_THREAD_TAGS_PATH = Path(__file__).resolve().parent.parent / "scripts" / "techsupport_thread_tags.json"
-DEFAULT_ANSWER_TAGS_PATH = Path(__file__).resolve().parent.parent / "scripts" / "techsupport_answer_tags.json"
+DEFAULT_THREAD_TAGS_PATH = THREAD_TAGS_PATH
+DEFAULT_ANSWER_TAGS_PATH = ANSWER_TAGS_PATH
 
 
 def _load_tags(tags_path: Path) -> Dict[str, str]:

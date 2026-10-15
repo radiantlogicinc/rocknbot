@@ -59,8 +59,9 @@ What is intentionally NOT required:
   * The state files (techsupport_sync_state.json, techsupport_reembed_state.json,
     techsupport_review_state.json) -- same reason; only their directory must be
     writable, since atomic_io writes a temp file beside them and os.replace()s.
-    That directory is the cron package itself (paths.PACKAGE_ROOT, i.e. /app/cron
-    in the image), which deployment notes section 5c requires on a volume.
+    That directory is the techsupport state folder (src/techsupport_state_paths.py),
+    by default techsupport_state/ next to LANCEDB_FOLDERPATH, i.e. on the same
+    volume as the table.
 
 Usage (the startup wiring lives in src/main.py, not here):
     from techsupport_preflight import run_preflight, format_preflight_report, is_strict_mode
@@ -81,6 +82,8 @@ from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 from paths import LILLISA_SERVER_ENV_PATH, LILLISA_SERVER_ROOT, PACKAGE_ROOT
+
+from src.techsupport_state_paths import resolve_state_dir, resolve_verified_qa_dir
 
 
 # Stable, machine-greppable code for alert routing. Do not reword: log-based
@@ -251,7 +254,7 @@ def _writability_problem(path: Path) -> Optional[str]:
 
     A missing directory is fine as long as its nearest existing ancestor is a
     writable directory -- the pipeline mkdirs on first use, and a fresh
-    deployment legitimately has no lancedb/ or data/verified_techsupport/ yet.
+    deployment legitimately has no lancedb/ or techsupport_state/ yet.
     """
     if path.exists():
         if not path.is_dir():
@@ -313,7 +316,6 @@ def run_preflight(
     github_env_path: Optional[Path] = None,
     lillisa_env_path: Optional[Path] = None,
     server_root: Optional[Path] = None,
-    package_root: Optional[Path] = None,
 ) -> PreflightResult:
     """Validate the resolved techsupport pipeline configuration and return
     EVERY problem found (never raises for a configuration problem).
@@ -326,14 +328,12 @@ def run_preflight(
       *_env_path    -- where each env file lives; also what the report tells
                        the operator to mount.
       server_root   -- LilLisa_Server root, for resolving relative paths.
-      package_root  -- the cron package dir, where the state files are written.
     """
     environ = os.environ if environ is None else environ
     sync_env_path = sync_env_path or SYNC_ENV_PATH
     github_env_path = github_env_path or GITHUB_ENV_PATH
     lillisa_env_path = lillisa_env_path or LILLISA_SERVER_ENV_PATH
     server_root = server_root or LILLISA_SERVER_ROOT
-    package_root = package_root or PACKAGE_ROOT
 
     sync = _overlay(sync_env if sync_env is not None else _read_env_file(sync_env_path), environ)
     github = _overlay(github_env if github_env is not None else _read_env_file(github_env_path), environ)
@@ -344,7 +344,7 @@ def run_preflight(
     problems.extend(_check_product_scan(sync, lillisa, sync_env_path, lillisa_env_path))
     problems.extend(_check_server(lillisa, lillisa_env_path))
     problems.extend(_check_github(github, github_env_path))
-    problems.extend(_check_writable_dirs(lillisa, environ, lillisa_env_path, server_root, package_root))
+    problems.extend(_check_writable_dirs(lillisa, lillisa_env_path, server_root))
 
     return PreflightResult(
         problems=tuple(problems),
@@ -539,10 +539,8 @@ def _check_github(github: Mapping[str, str], github_env_path: Path) -> List[Pref
 
 def _check_writable_dirs(
     lillisa: Mapping[str, str],
-    environ: Mapping[str, str],
     lillisa_env_path: Path,
     server_root: Path,
-    package_root: Path,
 ) -> List[PreflightProblem]:
     """Every directory the pipeline writes into. An unwritable one fails the
     run part-way (after Slack and the LLM have already been paid for), so it is
@@ -571,39 +569,31 @@ def _check_writable_dirs(
                 "container environment) at a writable directory",
             )
         )
-    # Same default techsupport_qa_ingest.py / github_sync.py use for the
-    # verified markdown: VERIFIED_TECHSUPPORT_QA_FOLDERPATH from the process
-    # environment, else <server root>/data/verified_techsupport. Resolved here
-    # rather than imported from those modules, which drag in LanceDB and
-    # GitPython -- see this module's docstring on staying self-contained.
-    raw_verified = _clean(environ.get("VERIFIED_TECHSUPPORT_QA_FOLDERPATH"))
+    # Resolved by the same functions the pipeline and the API get their paths
+    # from (src/techsupport_state_paths.py, via paths.py), so preflight always
+    # checks the folders that are actually written. That module is stdlib +
+    # dotenv only, so this module stays self-contained.
     targets.append(
         (
             ("VERIFIED_TECHSUPPORT_QA_FOLDERPATH",),
-            _resolve_path(raw_verified, server_root)
-            if raw_verified
-            else server_root / "data" / "verified_techsupport",
-            "mount a writable volume there, or set VERIFIED_TECHSUPPORT_QA_FOLDERPATH in the container "
-            "environment to a writable directory",
+            resolve_verified_qa_dir(lillisa, server_root),
+            "mount a writable volume there, or set VERIFIED_TECHSUPPORT_QA_FOLDERPATH (in "
+            f"{lillisa_env_path} or the container environment) to a writable directory",
         )
     )
-    # The pipeline's own state files live next to the scripts, i.e. /app/cron in
-    # the image (techsupport_sync_state.json's dedup flags, the reembed
-    # timestamp, and review_state's node_id mapping). Deployment notes section
-    # 5c requires that directory on persistent storage; an unwritable one means
-    # atomic_io cannot even write its temp file, so every run would fail after
-    # doing real work.
-    # Identified by role, not by a config key, because unlike the two paths
-    # above this one is NOT configurable: the state files are written beside
-    # the cron package (paths.PACKAGE_ROOT). Naming an env var here would send
-    # an operator looking for a setting that does not exist.
+    # The pipeline's own state files (techsupport_sync_state.json's dedup
+    # flags, the reembed timestamp, review_state's node_id mapping) and the
+    # API's two tag files. An unwritable folder means atomic_io cannot even
+    # write its temp file, so every run would fail after doing real work.
     targets.append(
         (
-            ("techsupport state directory",),
-            package_root,
+            ("TECHSUPPORT_STATE_DIR",),
+            resolve_state_dir(lillisa, server_root),
             "the techsupport state files (techsupport_sync_state.json, techsupport_reembed_state.json, "
-            "techsupport_review_state.json) are written here; it is not configurable, so mount this exact "
-            "directory on writable persistent storage (deployment notes section 5c)",
+            "techsupport_review_state.json, techsupport_thread_tags.json, techsupport_answer_tags.json) are "
+            "written here, next to LANCEDB_FOLDERPATH by default; make it writable by the server process, or "
+            f"set TECHSUPPORT_STATE_DIR (in {lillisa_env_path} or the container environment) to a writable "
+            "directory on persistent storage",
         )
     )
 

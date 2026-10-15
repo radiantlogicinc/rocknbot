@@ -14,7 +14,7 @@ cron/.venv/
 
 # Runtime state: belongs on a mounted volume, never baked into the image
 speedict/
-cron/*_state.json
+techsupport_state/
 
 # Not needed at runtime
 build/
