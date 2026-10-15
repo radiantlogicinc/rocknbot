@@ -242,9 +242,10 @@ def run_startup_preflight() -> None:
         dev-only escape hatch) -- logged at ERROR, not WARNING, because the
         pipeline really is broken; it is just not fatal by operator choice,
         and ERROR keeps that visually distinct from a DEGRADED-only report.
-      * DEGRADED-only problems: ingestion and retrieval still work (only the
-        GitHub mirror and answer source links are lost), so this never blocks
-        startup regardless of strict mode -- logged at WARNING.
+      * DEGRADED-only problems: the techsupport channel can still be ingested
+        and served (a product-channel scan is unconfigured, or a setting is
+        using its working default), so this never blocks startup regardless
+        of strict mode -- logged at WARNING.
       * no problems: a single INFO line confirming preflight passed.
       * the cron package unavailable (IMPORT_ERROR set, techsupport_preflight
         is None): see the comment below -- deliberately NOT a boot failure.
