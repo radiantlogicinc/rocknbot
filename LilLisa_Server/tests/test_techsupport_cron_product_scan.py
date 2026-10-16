@@ -78,7 +78,7 @@ class RunProductChannelScanOnceTests(unittest.TestCase):
     def test_a_nightly_run_in_flight_blocks_the_scan(self):
         nested = {}
 
-        def pipeline():
+        def pipeline(force=False):
             nested["scan"] = techsupport_cron.run_product_channel_scan_once(force=True)
             return {}
 

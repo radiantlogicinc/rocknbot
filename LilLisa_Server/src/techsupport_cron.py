@@ -51,11 +51,16 @@ try:
     # below already covers it, with no separate detection needed.
     import techsupport_preflight  # noqa: E402
 
+    # Same package again: the startup repo -> LanceDB sync for verified
+    # techsupport content (see run_startup_bootstrap below).
+    import techsupport_bootstrap  # noqa: E402
+
     IMPORT_ERROR: Optional[str] = None
 except Exception as exc:  # noqa: BLE001 -- a broken cron install must not stop the API from serving
     run_pipeline = None  # type: ignore[assignment]
     run_product_channel_scan = None  # type: ignore[assignment]
     techsupport_preflight = None  # type: ignore[assignment]
+    techsupport_bootstrap = None  # type: ignore[assignment]
     IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 _run_lock = threading.Lock()
@@ -288,6 +293,51 @@ def run_startup_preflight() -> None:
     # strict mode is off: an operator deliberately chose to start a pipeline known to be
     # broken (the dev-only escape hatch). ERROR, not WARNING -- see the docstring above.
     utils.logger.error(report)
+
+
+def run_startup_bootstrap() -> Dict[str, Any]:
+    """Called once, synchronously, from main.lifespan between
+    run_startup_preflight() and start_scheduler(): clones GITHUB_REPO_URL,
+    the source of truth for verified techsupport content, and rebuilds the
+    TECHSUPPORT_QA_PAIRS LanceDB table from it when the two disagree. See
+    cron/techsupport_bootstrap.py's module docstring for the full contract
+    and for why this needs its own startup step instead of riding on
+    main.init_lance_databases().
+
+    Ordered AFTER preflight on purpose: preflight owns validating
+    GITHUB_TOKEN/GITHUB_REPO_URL (both BLOCKING), so a misconfigured
+    deployment aborts there with a complete report rather than surfacing
+    here as a single clone failure. Ordered BEFORE start_scheduler() so the
+    table is in sync before the first nightly tick can append to it.
+
+    Raises RuntimeError when any bootstrap step failed, which main.lifespan
+    lets propagate so uvicorn aborts startup and the pod exits non-zero --
+    the same fail-fast contract as the golden QA pairs rebuild in
+    init_lance_databases(). Serving with a markdown/repo/LanceDB triple that
+    is known to be out of sync is not acceptable: the next nightly run would
+    append to, push, or re-embed from the wrong baseline.
+    """
+    if techsupport_bootstrap is None:
+        # Broken image rather than missing config -- see run_startup_preflight()'s
+        # handling of the same condition for why this is quiet here: start_scheduler(),
+        # called just after, logs it at ERROR already.
+        utils.logger.debug("Skipping techsupport bootstrap: cron package unavailable (%s)", IMPORT_ERROR)
+        return {"ran": False, "reason": "unavailable", "error": IMPORT_ERROR}
+
+    result = techsupport_bootstrap.run_bootstrap()
+
+    # run_bootstrap() swallows its own exceptions into per-step {"error": ...}
+    # entries so one failed step cannot skip the next, which means the only
+    # place they become visible is here.
+    failed_steps = [step for step, outcome in result.items() if isinstance(outcome, dict) and outcome.get("error")]
+    if failed_steps:
+        utils.logger.critical("techsupport startup bootstrap had failing step(s) %s: %s", failed_steps, result)
+        raise RuntimeError(
+            f"techsupport startup bootstrap failed at step(s) {failed_steps} -- refusing to start; "
+            "see the preceding CRITICAL log for details."
+        )
+    utils.logger.info("techsupport startup bootstrap complete: %s", result)
+    return result
 
 
 def preflight_health_payload() -> Dict[str, Any]:

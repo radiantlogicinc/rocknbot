@@ -571,6 +571,21 @@ async def lifespan(_app: FastAPI):
     # this module (src.main) -- see tests/test_techsupport_cron_product_scan.py's
     # docstring -- so this call site stays thin on purpose.
     techsupport_cron.run_startup_preflight()
+
+    # Reconcile the verified techsupport markdown with GITHUB_REPO_URL (the
+    # side with more entries wins: pull if the repo is ahead, push if local
+    # is ahead) and rebuild TECHSUPPORT_QA_PAIRS from it when the two
+    # disagree. Same repo-clone-then-rebuild contract that
+    # _run_update_golden_qa_pairs_task() applies to QA_PAIRS_GITHUB_REPO_URL
+    # above, but called on BOTH branches of the needs_rebuild check rather
+    # than from init_lance_databases(): TECHSUPPORT_QA_PAIRS is deliberately
+    # not in _REQUIRED_LANCEDB_TABLES (a missing one must not trigger a full
+    # docs + golden rebuild), so a pod taking the fast path above would
+    # otherwise never build it at all. The call self-gates on a row-count vs.
+    # entry-count comparison, so the common restart is a no-op. Like the
+    # golden QA rebuild, a failure raises and aborts startup.
+    techsupport_cron.run_startup_bootstrap()
+
     pipeline_scheduler_task = techsupport_cron.start_scheduler()
 
     yield
