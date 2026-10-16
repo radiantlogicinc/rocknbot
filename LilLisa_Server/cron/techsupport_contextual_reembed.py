@@ -39,6 +39,21 @@ and no-ops if the interval hasn't elapsed, so calling this on every
 nightly_pipeline.py run is cheap on the nights it's not due, and there's no
 need for a separate cron entry.
 
+A state file that is MISSING (or exists with no last_reembed_timestamp) is
+deliberately also a no-op, NOT "due now": is_reembed_due() only returns True
+when a prior successful re-embed is already on record and the interval has
+elapsed since then. The alternative -- treating "no record" as "due" --
+means losing or resetting this one small JSON file (e.g. a state-folder path
+change) silently triggers rebuild_table()'s unconditional overwrite of the
+live TECHSUPPORT_QA_PAIRS table from whatever techsupport_qa_pairs.md
+happens to contain at that moment, without ever having confirmed that
+markdown is actually the complete corpus. Run with --force (standalone) or
+run_if_due(force=True) (as a library) to run deliberately regardless of
+state -- the right call right after a fresh deployment's bootstrap step
+populates TECHSUPPORT_QA_PAIRS from a markdown file known to be correct (see
+techsupport_bootstrap.py), or whenever an operator has verified the markdown
+by hand and wants to force a re-embed now.
+
 Unlike techsupport_qa_ingest.py, this module deliberately does NOT import
 that module (or techsupport_classifier.py) -- both trigger a module-level
 configure_dspy_lm(), an LLM dependency this script (which only re-embeds
@@ -66,10 +81,12 @@ server reads):
 
 Usage (as a library):
     from techsupport_contextual_reembed import run_if_due
-    result = run_if_due()
+    result = run_if_due()           # interval-gated, see above
+    result = run_if_due(force=True) # run now regardless of state
 
 Usage (standalone):
     python techsupport_contextual_reembed.py
+    python techsupport_contextual_reembed.py --force
 """
 
 import json
@@ -197,9 +214,20 @@ def save_state(state: Dict[str, Any]) -> None:
 
 
 def is_reembed_due(state: Dict[str, Any]) -> bool:
+    """True only when a PRIOR successful re-embed is already on record (a
+    "last_reembed_timestamp" written by an earlier run_if_due()/run_reembed()
+    call) AND TECHSUPPORT_REEMBED_INTERVAL_DAYS have elapsed since then.
+
+    Deliberately NOT true just because the timestamp is missing -- see the
+    module docstring's "A state file that is MISSING..." section. A fresh
+    deployment's bootstrap step (techsupport_bootstrap.py) or an operator who
+    has verified the markdown by hand should call run_if_due(force=True) (or
+    run_reembed() directly) instead of relying on a missing state file to
+    trigger this automatically.
+    """
     last = state.get("last_reembed_timestamp")
     if last is None:
-        return True
+        return False
     interval_seconds = get_reembed_interval_days() * 86400
     return (time.time() - float(last)) >= interval_seconds
 
@@ -402,24 +430,47 @@ def run_reembed() -> Dict[str, Any]:
     return result
 
 
-def run_if_due() -> Dict[str, Any]:
-    """Interval-gated entry point: re-embeds only if
-    TECHSUPPORT_REEMBED_INTERVAL_DAYS have elapsed since the last successful
-    re-embed (tracked in techsupport_reembed_state.json), else no-ops. Safe to
-    call on every nightly_pipeline.py run -- no separate cron entry needed."""
+def run_if_due(force: bool = False) -> Dict[str, Any]:
+    """Interval-gated entry point: re-embeds only if a prior re-embed is on
+    record AND TECHSUPPORT_REEMBED_INTERVAL_DAYS have elapsed since then
+    (see is_reembed_due()), else no-ops. Safe to call on every
+    nightly_pipeline.py run -- no separate cron entry needed.
+
+    A missing/empty state file is one of the no-op reasons, NOT a trigger --
+    see is_reembed_due() and the module docstring. Pass force=True to run
+    unconditionally regardless of state; the run is still recorded in state
+    afterwards either way, so a forced run also starts the normal interval
+    clock for future automatic calls."""
     state = load_state()
-    if not is_reembed_due(state):
+    if not force and not is_reembed_due(state):
+        reason = "no_prior_reembed_on_record" if state.get("last_reembed_timestamp") is None else "interval_not_elapsed"
         return {
             "ran": False,
-            "reason": "interval_not_elapsed",
+            "reason": reason,
             "last_reembed_timestamp": state.get("last_reembed_timestamp"),
         }
 
     result = run_reembed()
     state["last_reembed_timestamp"] = f"{time.time():.6f}"
     save_state(state)
-    return {"ran": True, **result}
+    return {"ran": True, "forced": force, **result}
 
 
 if __name__ == "__main__":
-    print(run_if_due())
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Run the periodic full contextual re-embed of TECHSUPPORT_QA_PAIRS."
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Run even if techsupport_reembed_state.json has no prior re-embed on record, or "
+            "TECHSUPPORT_REEMBED_INTERVAL_DAYS hasn't elapsed. Required the first time this runs "
+            "against a freshly-populated table (e.g. right after a deployment bootstrap), since a "
+            "missing/empty state file is deliberately NOT auto-triggered -- see is_reembed_due()."
+        ),
+    )
+    args = parser.parse_args()
+    print(run_if_due(force=args.force))

@@ -140,6 +140,7 @@ PROJECT_ROOT = LILLISA_SERVER_ROOT
 from github_anchor import compute_github_urls_for_titles  # noqa: E402
 from techsupport_classifier import configure_dspy_lm  # noqa: E402
 from techsupport_markdown import (  # noqa: E402
+    find_duplicate_entry_index,
     parse_summary_markdown,
     prepare_title_and_summary_for_markdown,
     sanitize_techsupport_summary,
@@ -578,6 +579,22 @@ def add_verified_qa_pair(conversation_thread: str, thread_ts: Optional[str] = No
     recorded alongside the entry's node_id(s) in review_state so that a later
     reply to the same thread can be found again and used to REPLACE this
     entry in place -- see replace_verified_qa_pair() / find_entry_index_for_thread().
+
+    Defense in depth against techsupport_review_state.json being missing,
+    reset, or never having tracked this thread (e.g. a state-folder
+    migration, or an entry added before thread_ts tracking existed): the
+    thread_ts check above is the normal dedup guard, but it can only catch a
+    repeat ingest if review_state still has this thread's mapping. If that
+    mapping is gone, the SAME conversation gets re-summarized into
+    near-identical prose. Before ever appending to the markdown file or
+    writing to LanceDB, that regenerated summary is compared by content
+    (find_duplicate_entry_index(), see techsupport_markdown.py) against every
+    existing entry. A match means this thread's content is already verified
+    and on file -- rather than appending a duplicate block (which would
+    otherwise get a "- 2" title suffix from uniquify_techsupport_title(),
+    since the title usually regenerates identically too), the existing
+    entry's review_state record is backfilled with this thread_ts so future
+    runs can find it the normal way, and nothing else is touched.
     """
     if thread_ts and find_entry_index_for_thread(thread_ts) is not None:
         # Retry after a crash that wrote markdown/LanceDB but not added_to_verified_db:
@@ -588,11 +605,37 @@ def add_verified_qa_pair(conversation_thread: str, thread_ts: Optional[str] = No
     title, summary = generated["title"], generated["summary"]
 
     markdown_filepath = VERIFIED_TECHSUPPORT_QA_FOLDERPATH / TECHSUPPORT_QA_MARKDOWN_FILENAME
-    existing_titles: List[str] = []
+    existing_entries: List[Dict[str, str]] = []
     if markdown_filepath.exists():
-        existing_titles = [
-            entry["title"] for entry in parse_summary_markdown(markdown_filepath.read_text(encoding="utf-8"))
-        ]
+        existing_entries = parse_summary_markdown(markdown_filepath.read_text(encoding="utf-8"))
+    existing_titles = [entry["title"] for entry in existing_entries]
+
+    duplicate_index = find_duplicate_entry_index(summary, existing_entries)
+    if duplicate_index is not None:
+        logger.warning(
+            "add_verified_qa_pair: generated summary for thread_ts=%r matches existing markdown "
+            "entry %d (%r) almost exactly -- treating as already-added instead of appending a "
+            "duplicate entry. This usually means techsupport_review_state.json lost this "
+            "thread's thread_ts mapping; backfilling it now.",
+            thread_ts,
+            duplicate_index,
+            existing_entries[duplicate_index]["title"],
+        )
+        review_state = load_review_state()
+        existing_entry_state = review_entry_state(review_state, duplicate_index)
+        review_state["entries"][str(duplicate_index)] = with_provenance(
+            existing_entry_state, node_ids_from_review_entry(existing_entry_state), thread_ts
+        )
+        save_review_state(review_state)
+        return {
+            "title": existing_entries[duplicate_index]["title"],
+            "summary": existing_entries[duplicate_index]["summary"],
+            "markdown_path": str(markdown_filepath),
+            "table_name": TECHSUPPORT_QA_TABLE_NAME,
+            "node_ids": node_ids_from_review_entry(existing_entry_state),
+            "deduped_existing_entry_index": duplicate_index,
+        }
+
     title, summary = prepare_title_and_summary_for_markdown(title, summary, existing_titles)
 
     # The new entry's ordinal is its position in the markdown file as it
