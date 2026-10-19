@@ -64,7 +64,7 @@ This is a separate env file from `lil-lisa`'s on purpose, so the pipeline never 
 | Variable                | Purpose                                                                                                                                                                                                                              |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `GITHUB_TOKEN`          | Personal access token used to push both GitHub repos: the verified techsupport markdown (`GITHUB_REPO_URL`) and the golden QA pairs (`QA_PAIRS_GITHUB_REPO_URL`). See Section 7a for PAT scopes and how auth is passed (GIT_ASKPASS; token must not be in the URL). |
-| `GITHUB_REPO_URL`       | HTTPS URL of that repo with **no** embedded credentials (currently `sgodey8/rocknbot_techsupport_qa_pairs`, see Section 7).                                                                                                          |
+| `GITHUB_REPO_URL`       | HTTPS URL of that repo with **no** embedded credentials.                                                                                                          |
 
 
 
@@ -395,7 +395,7 @@ For the real production tech support channel, the bot needs to actually be a mem
 
 ## 7 Private GitHub Repo
 
-This is now live and actively syncing. The verified techsupport markdown file gets pushed automatically after every nightly update to a dedicated private repo, `sgodey8/rocknbot_techsupport_qa_pairs`. Every answer that draws on this content includes a working link directly to the relevant section of the file, using GitHub's heading-anchor links, so users can click through and read the full context.
+This is now live and actively syncing. The verified techsupport markdown file gets pushed automatically after every nightly update to a dedicated private repo. Every answer that draws on this content includes a working link directly to the relevant section of the file, using GitHub's heading-anchor links, so users can click through and read the full context.
 
 This repo currently lives under my personal GitHub account, matching the existing golden QA pairs repo (`drawal1/rocknbot_qa_pairs`), not a company-owned org account. This can be moved if needed.
 
