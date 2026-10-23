@@ -33,13 +33,21 @@ jobs:
           sudo rm -rf /usr/local/lib/android
           docker system prune --all --force
       -
+        name: Read versions
+        id: versions
+        run: |
+          echo "server=$(python3 -c 'import tomllib; print(tomllib.load(open("LilLisa_Server/pyproject.toml", "rb"))["project"]["version"])')" >> "$GITHUB_OUTPUT"
+          echo "slack=$(python3 -c 'import tomllib; print(tomllib.load(open("lil-lisa/pyproject.toml", "rb"))["project"]["version"])')" >> "$GITHUB_OUTPUT"
+      -
         name: Build and push
         uses: docker/build-push-action@v6
         with:
           push: true
           file: LilLisa_Server/build/dockerfile_prod
           context: LilLisa_Server
-          tags: radiantone/rocknbot-server:staging
+          tags: |
+            radiantone/rocknbot-server:staging
+            radiantone/rocknbot-server:${{ steps.versions.outputs.server }}
           provenance: true
           sbom: true
       -
@@ -59,6 +67,8 @@ jobs:
           push: true
           file: lil-lisa/build/dockerfile_prod
           context: lil-lisa
-          tags: radiantone/rocknbot-slack:staging
+          tags: |
+            radiantone/rocknbot-slack:staging
+            radiantone/rocknbot-slack:${{ steps.versions.outputs.slack }}
           provenance: true
           sbom: true

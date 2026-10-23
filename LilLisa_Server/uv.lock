@@ -1030,7 +1030,7 @@ wheels = [
 
 [[package]]
 name = "lillisa-server"
-version = "2.6.2"
+version = "2.6.3"
 source = { virtual = "." }
 dependencies = [
     { name = "boto3" },
