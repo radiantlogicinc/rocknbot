@@ -22,6 +22,7 @@ from slack_bolt.adapter.socket_mode.async_handler import (  # type: ignore
 from slack_bolt.async_app import AsyncApp  # type: ignore
 from slack_sdk.errors import SlackApiError  # type: ignore
 
+from channel_check import log_configured_channels
 from escalation_tracker import (
     claim_escalation,
     clear_escalation,
@@ -142,6 +143,14 @@ async def _find_usergroup_id(handle):
             raise RateLimited(float(headers.get("Retry-After", 1))) from exc
         raise
     return group_id_for_handle(resp.get("usergroups") or [], handle)
+
+
+async def _channel_info(channel_id):
+    """Slack `conversations.info` payload, including `ok: false` error payloads."""
+    try:
+        return (await app.client.conversations_info(channel=channel_id)).data
+    except SlackApiError as exc:
+        return exc.response.data
 
 
 # Expert identity: one Slack user group per product. Membership is cached
@@ -1880,6 +1889,7 @@ async def start_slackapp():
         None
     """
     try:
+        await log_configured_channels(lil_lisa_env, _channel_info)
         handler = AsyncSocketModeHandler(app, SLACK_APP_TOKEN)
         await handler.start_async()
     except Exception as exc:  # pylint:disable=broad-except

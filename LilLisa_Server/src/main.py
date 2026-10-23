@@ -571,6 +571,7 @@ async def lifespan(_app: FastAPI):
     # this module (src.main) -- see tests/test_techsupport_cron_product_scan.py's
     # docstring -- so this call site stays thin on purpose.
     techsupport_cron.run_startup_preflight()
+    techsupport_cron.log_slack_channels()
 
     # Reconcile the verified techsupport markdown with GITHUB_REPO_URL (the
     # side with more entries wins: pull if the repo is ahead, push if local

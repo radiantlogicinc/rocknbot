@@ -377,6 +377,8 @@ Event Subscriptions also need to be turned on alongside the bot token scopes abo
 
 `usergroups:read` lets the bot call `usergroups.users.list` to resolve the per-product expert user groups (`EXPERT_GROUP_ID_IDA` / `_IDDM` / `_IDO`, Section 2). Add the scope and reinstall the app **before** deploying: without it every expert lookup fails loudly (`ExpertLookupError` out of the Slack handlers, an errored product in the nightly pass) instead of quietly treating everyone as a non-expert.
 
+At startup both the bot and the backend log the Slack channel behind every configured channel ID, for example `Slack channel CHANNEL_ID_IDA = C0123ABCD (#rocknbot-ida)`, using one `conversations.info` call per ID. Check these lines after a deploy: a wrong ID shows up as the wrong `#name`, and a channel that cannot be confirmed is a WARNING naming the Slack error (`channel_not_found`, `ARCHIVED`, `bot is NOT a member`). The check never blocks startup. It works with the existing `channels:read` scope for public channels; private channels also need `groups:read`, which is optional and only affects this log line.
+
 ### 6a. Expert user groups: what to set up
 
 

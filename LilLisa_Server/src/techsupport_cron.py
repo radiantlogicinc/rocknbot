@@ -55,12 +55,16 @@ try:
     # techsupport content (see run_startup_bootstrap below).
     import techsupport_bootstrap  # noqa: E402
 
+    # Same package: logs which Slack channel each configured channel ID names.
+    import slack_channel_check  # noqa: E402
+
     IMPORT_ERROR: Optional[str] = None
 except Exception as exc:  # noqa: BLE001 -- a broken cron install must not stop the API from serving
     run_pipeline = None  # type: ignore[assignment]
     run_product_channel_scan = None  # type: ignore[assignment]
     techsupport_preflight = None  # type: ignore[assignment]
     techsupport_bootstrap = None  # type: ignore[assignment]
+    slack_channel_check = None  # type: ignore[assignment]
     IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 _run_lock = threading.Lock()
@@ -293,6 +297,15 @@ def run_startup_preflight() -> None:
     # strict mode is off: an operator deliberately chose to start a pipeline known to be
     # broken (the dev-only escape hatch). ERROR, not WARNING -- see the docstring above.
     utils.logger.error(report)
+
+
+def log_slack_channels() -> Dict[str, str]:
+    """Called once from main.lifespan after run_startup_preflight(): logs the
+    Slack channel name behind each configured channel ID so a wrong ID is
+    visible in the startup log. Best-effort; see cron/slack_channel_check.py."""
+    if slack_channel_check is None:
+        return {}
+    return slack_channel_check.log_configured_channels()
 
 
 def run_startup_bootstrap(reload_retrievers: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
