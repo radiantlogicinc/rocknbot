@@ -88,7 +88,7 @@ The project is not currently open for contributions.
 The application uses several environment variables configured in `app_envfiles/lil-lisa.env`:
 
 - **MAX_LENGTH**: Controls the maximum length of messages sent to Slack (e.g., `MAX_LENGTH = 4000`). Messages exceeding this limit will be truncated to ensure proper formatting and delivery.
-- **EXPERT_GROUP_ID_IDA / _IDDM**: Required. Slack **user group** IDs (e.g. `S0123ABCD`, from `usergroups.list`, not the `@handle`) whose members count as experts for that product. This is the only source of expert identity, so the bot refuses to start if either is missing. The Slack app needs the `usergroups:read` scope; without it expert lookups fail loudly rather than treating everyone as a non-expert.
+- **EXPERT_GROUP_ID_IDA / _IDDM**: Required. Slack **user group** whose members count as experts for that product: either its ID (e.g. `S0123ABCD`, from `usergroups.list`) or its `@handle` (e.g. `@rocknbot-certified-ida-experts`), which is resolved to the ID on first use. This is the only source of expert identity, so the bot refuses to start if either is missing. The Slack app needs the `usergroups:read` scope; without it expert lookups fail loudly rather than treating everyone as a non-expert.
 - **EXPERT_GROUP_ID_IDO**: Optional, for the IDO product. With no group, nobody is an IDO expert.
 - **EXPERT_GROUP_CACHE_SECONDS**: How long expert group membership is cached before Slack is asked again, in seconds (default `300`). A failed refresh keeps serving the last cached membership; with nothing cached it raises.
 - Other Slack API tokens and channel configurations as required

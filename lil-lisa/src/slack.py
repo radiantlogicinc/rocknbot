@@ -32,6 +32,7 @@ from expert_group import (
     ExpertResolver,
     RateLimited,
     cache_seconds_from_env,
+    group_id_for_handle,
     group_ids_from_env,
 )
 from utils import (
@@ -126,6 +127,23 @@ async def _fetch_usergroup_members(usergroup_id):
     return list(resp.get("users") or [])
 
 
+async def _find_usergroup_id(handle):
+    """Slack `usergroups.list` lookup of an @handle's group id (needs `usergroups:read`).
+
+    Same error contract as _fetch_usergroup_members.
+    """
+    try:
+        resp = await app.client.usergroups_list()
+    except SlackApiError as exc:
+        response = getattr(exc, "response", None)
+        error = (response.get("error") if response is not None else None) or ""
+        if error == "ratelimited":
+            headers = getattr(response, "headers", {}) or {}
+            raise RateLimited(float(headers.get("Retry-After", 1))) from exc
+        raise
+    return group_id_for_handle(resp.get("usergroups") or [], handle)
+
+
 # Expert identity: one Slack user group per product. Membership is cached
 # (EXPERT_GROUP_CACHE_SECONDS, default 300s) so the per-message and per-reaction
 # hot paths do not call Slack. See src/expert_group.py.
@@ -135,6 +153,7 @@ expert_resolver = ExpertResolver(
     group_ids=group_ids_from_env(lil_lisa_env),
     fetch_members=_fetch_usergroup_members,
     cache_seconds=cache_seconds_from_env(lil_lisa_env),
+    find_group_id=_find_usergroup_id,
 )
 if not expert_resolver.is_configured("IDO"):
     logger.warning("No EXPERT_GROUP_ID_IDO configured — IDO expert support disabled")

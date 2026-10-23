@@ -214,6 +214,97 @@ class RateLimitTests(unittest.TestCase):
         self.assertEqual(sleeps, [2.0])
 
 
+class FakeFinder:
+    """Injected `usergroups.list` handle lookup stand-in."""
+
+    def __init__(self, ids):
+        self.ids = dict(ids)
+        self.calls = []
+
+    def __call__(self, handle):
+        self.calls.append(handle)
+        return eg.group_id_for_handle([{"id": i, "handle": h} for h, i in self.ids.items()], handle)
+
+
+class HandleTests(unittest.TestCase):
+    def test_handle_is_resolved_to_its_id_before_fetching_members(self):
+        fetcher = FakeFetcher([["U1"]])
+        finder = FakeFinder({"ida-experts": "S_IDA"})
+        resolver = make_resolver(fetcher, group_ids={"IDA": "@ida-experts", "IDDM": "S_IDDM"}, find_group_id=finder)
+
+        self.assertTrue(resolver.is_expert("U1", "IDA"))
+        self.assertEqual(finder.calls, ["ida-experts"])
+        self.assertEqual(fetcher.calls, ["S_IDA"])
+
+    def test_handle_is_looked_up_once_across_refreshes(self):
+        clock = FakeClock()
+        fetcher = FakeFetcher([["U1"], ["U2"]])
+        finder = FakeFinder({"ida-experts": "S_IDA"})
+        resolver = make_resolver(
+            fetcher, clock=clock, group_ids={"IDA": "@ida-experts", "IDDM": "S_IDDM"}, find_group_id=finder
+        )
+
+        resolver.expert_user_ids("IDA")
+        clock.advance(301)
+        self.assertEqual(resolver.expert_user_ids("IDA"), ["U2"])
+        self.assertEqual(finder.calls, ["ida-experts"])
+
+    def test_id_values_never_call_the_finder(self):
+        finder = FakeFinder({})
+        resolver = make_resolver(FakeFetcher([["U1"]]), find_group_id=finder)
+
+        resolver.expert_user_ids("IDA")
+        self.assertEqual(finder.calls, [])
+
+    def test_unknown_handle_fails_loudly(self):
+        fetcher = FakeFetcher([["U1"]])
+        resolver = make_resolver(
+            fetcher, group_ids={"IDA": "@nope", "IDDM": "S_IDDM"}, find_group_id=FakeFinder({"ida-experts": "S_IDA"})
+        )
+
+        with self.assertRaises(eg.ExpertLookupError) as ctx:
+            resolver.expert_user_ids("IDA")
+        self.assertEqual(ctx.exception.group_id, "@nope")
+        self.assertIn("@nope", str(ctx.exception))
+        self.assertEqual(fetcher.calls, [])
+
+    def test_handle_without_a_finder_fails_loudly(self):
+        resolver = make_resolver(FakeFetcher([["U1"]]), group_ids={"IDA": "@ida-experts", "IDDM": "S_IDDM"})
+        with self.assertRaises(eg.ExpertLookupError):
+            resolver.expert_user_ids("IDA")
+
+    def test_handle_match_is_case_insensitive(self):
+        groups = [{"id": "S1", "handle": "Other"}, {"id": "S2", "handle": "RockNBot-IDA-Experts"}]
+        self.assertEqual(eg.group_id_for_handle(groups, "rocknbot-ida-experts"), "S2")
+
+    def test_slack_group_finder(self):
+        find = eg.make_slack_group_finder("xoxb-test")
+        payload = {"ok": True, "usergroups": [{"id": "S_IDA", "handle": "ida-experts"}]}
+        with patch.object(eg.requests, "get", return_value=FakeResponse(payload)) as get:
+            self.assertEqual(find("ida-experts"), "S_IDA")
+        self.assertTrue(get.call_args.args[0].endswith("/usergroups.list"))
+        self.assertEqual(get.call_args.kwargs["headers"], {"Authorization": "Bearer xoxb-test"})
+
+    def test_slack_group_finder_errors(self):
+        find = eg.make_slack_group_finder("xoxb-test")
+        limited = FakeResponse({"ok": False, "error": "ratelimited"}, headers={"Retry-After": "4"})
+        with patch.object(eg.requests, "get", return_value=limited):
+            with self.assertRaises(eg.RateLimited):
+                find("ida-experts")
+        with patch.object(eg.requests, "get", return_value=FakeResponse({"ok": False, "error": "missing_scope"})):
+            with self.assertRaises(RuntimeError):
+                find("ida-experts")
+
+    def test_from_env_wires_the_slack_group_finder(self):
+        payload = {"ok": True, "usergroups": [{"id": "S_IDA", "handle": "ida-experts"}]}
+        resolver = eg.ExpertResolver.from_env(
+            {"EXPERT_GROUP_ID_IDA": "@ida-experts", "EXPERT_GROUP_ID_IDDM": "S_IDDM", "SLACK_BOT_TOKEN": "xoxb-test"},
+            fetch_members=FakeFetcher([["U1"]]),
+        )
+        with patch.object(eg.requests, "get", return_value=FakeResponse(payload)):
+            self.assertTrue(resolver.is_expert("U1", "IDA"))
+
+
 class SlackFetcherTests(unittest.TestCase):
     def test_ok_response_returns_users(self):
         fetch = eg.make_slack_fetcher("xoxb-test")
