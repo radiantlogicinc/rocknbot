@@ -584,7 +584,9 @@ async def lifespan(_app: FastAPI):
     # otherwise never build it at all. The call self-gates on a row-count vs.
     # entry-count comparison, so the common restart is a no-op. Like the
     # golden QA rebuild, a failure raises and aborts startup.
-    techsupport_cron.run_startup_bootstrap()
+    techsupport_cron.run_startup_bootstrap(
+        reload_retrievers=lambda: create_qa_pairs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+    )
 
     pipeline_scheduler_task = techsupport_cron.start_scheduler()
 

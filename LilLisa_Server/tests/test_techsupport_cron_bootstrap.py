@@ -101,6 +101,51 @@ class RunStartupBootstrapTests(unittest.TestCase):
 
         self.assertIn("lancedb_rebuild", str(ctx.exception))
 
+    def test_rebuild_reloads_retrievers(self):
+        # main.lifespan opened the retrievers before the table was rebuilt, so a
+        # rebuild that is not followed by a reload stays invisible to queries.
+        outcome = {
+            "markdown_sync": {"direction": "pull", "pull": {"pulled": True, "entry_count": 680}},
+            "lancedb_rebuild": {"ran": True, "forced": True, "row_count": 680, "qa_pair_count": 680},
+        }
+        fake_bootstrap = MagicMock()
+        fake_bootstrap.run_bootstrap.return_value = outcome
+        reload_retrievers = MagicMock()
+
+        with patch.object(techsupport_cron, "techsupport_bootstrap", fake_bootstrap):
+            techsupport_cron.run_startup_bootstrap(reload_retrievers=reload_retrievers)
+
+        reload_retrievers.assert_called_once_with()
+
+    def test_no_rebuild_skips_reload(self):
+        outcome = {
+            "markdown_sync": {"direction": "none", "pull": {"pulled": False, "reason": "unchanged", "entry_count": 680}},
+            "lancedb_rebuild": {"ran": False, "reason": "already_in_sync", "entry_count": 680, "row_count": 680},
+        }
+        fake_bootstrap = MagicMock()
+        fake_bootstrap.run_bootstrap.return_value = outcome
+        reload_retrievers = MagicMock()
+
+        with patch.object(techsupport_cron, "techsupport_bootstrap", fake_bootstrap):
+            techsupport_cron.run_startup_bootstrap(reload_retrievers=reload_retrievers)
+
+        reload_retrievers.assert_not_called()
+
+    def test_failed_bootstrap_aborts_before_reload(self):
+        outcome = {
+            "markdown_sync": {"direction": "push", "push": {"pushed": True}},
+            "lancedb_rebuild": {"ran": True, "error": "row count mismatch"},
+        }
+        fake_bootstrap = MagicMock()
+        fake_bootstrap.run_bootstrap.return_value = outcome
+        reload_retrievers = MagicMock()
+
+        with patch.object(techsupport_cron, "techsupport_bootstrap", fake_bootstrap):
+            with self.assertRaises(RuntimeError):
+                techsupport_cron.run_startup_bootstrap(reload_retrievers=reload_retrievers)
+
+        reload_retrievers.assert_not_called()
+
     def test_broken_cron_install_is_a_quiet_no_op(self):
         # A missing cron package is a broken IMAGE, not missing config -- and
         # start_scheduler(), called right after in main.lifespan, already logs it

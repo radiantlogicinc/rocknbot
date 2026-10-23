@@ -20,7 +20,7 @@ import sys
 import threading
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from src import utils
 
@@ -295,7 +295,7 @@ def run_startup_preflight() -> None:
     utils.logger.error(report)
 
 
-def run_startup_bootstrap() -> Dict[str, Any]:
+def run_startup_bootstrap(reload_retrievers: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
     """Called once, synchronously, from main.lifespan between
     run_startup_preflight() and start_scheduler(): clones GITHUB_REPO_URL,
     the source of truth for verified techsupport content, and rebuilds the
@@ -316,6 +316,12 @@ def run_startup_bootstrap() -> Dict[str, Any]:
     init_lance_databases(). Serving with a markdown/repo/LanceDB triple that
     is known to be out of sync is not acceptable: the next nightly run would
     append to, push, or re-embed from the wrong baseline.
+
+    main.lifespan opens the QA pairs retrievers BEFORE this runs, so a rebuild
+    here leaves them pointing at the missing or pre-rebuild table. The server
+    is not serving yet, so the pipeline's HTTP reload (POST
+    /reload_techsupport_qa_pairs/) cannot reach it; reload_retrievers is called
+    in-process instead, only when lancedb_rebuild actually ran.
     """
     if techsupport_bootstrap is None:
         # Broken image rather than missing config -- see run_startup_preflight()'s
@@ -337,6 +343,11 @@ def run_startup_bootstrap() -> Dict[str, Any]:
             "see the preceding CRITICAL log for details."
         )
     utils.logger.info("techsupport startup bootstrap complete: %s", result)
+
+    rebuild = result.get("lancedb_rebuild")
+    if reload_retrievers is not None and isinstance(rebuild, dict) and rebuild.get("ran"):
+        reload_retrievers()
+        utils.logger.info("Reloaded QA pairs retrievers/indices after techsupport startup rebuild")
     return result
 
 
