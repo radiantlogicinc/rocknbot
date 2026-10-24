@@ -35,9 +35,10 @@ Shared rules (identical in both copies):
      the failure is loud instead of silently making everyone a non-expert.
   5. An unconfigured optional product resolves to [] without any Slack call.
   6. A value starting with "@" is a user group handle. It is resolved to its ID
-     once via Slack `usergroups.list` (same `usergroups:read` scope) and the ID
-     is kept for the life of the process. An unknown handle is a failed lookup
-     under rule 4. Any other value is used as the ID unchanged.
+     once via Slack `usergroups.list` (same `usergroups:read` scope), following
+     `response_metadata.next_cursor` until the handle is found or the last page
+     is reached. The ID is kept for the life of the process. An unknown handle
+     is a failed lookup under rule 4. Any other value is used as the ID unchanged.
 
 Usage:
     from expert_group import is_expert, expert_user_ids
@@ -177,14 +178,18 @@ def make_slack_fetcher(token: str) -> FetchMembers:
 def make_slack_group_finder(token: str) -> FindGroupId:
     """Default handle lookup: Slack `usergroups.list` over `requests`.
 
-    Handles match case-insensitively. Raises RateLimited on `ratelimited`, and
-    RuntimeError for any other Slack error or when no group has the handle.
+    Follows `response_metadata.next_cursor` until the handle is found or Slack
+    has no further page. Handles match case-insensitively. Raises RateLimited
+    on `ratelimited`, and RuntimeError for any other Slack error or when no
+    group has the handle.
     """
 
-    def find(handle: str) -> str:
+    def fetch_page(cursor: str) -> Mapping[str, object]:
+        params = {"cursor": cursor} if cursor else None
         resp = requests.get(
             f"{SLACK_API_BASE}/usergroups.list",
             headers={"Authorization": f"Bearer {token}"},
+            params=params,
             timeout=SLACK_TIMEOUT_SECONDS,
         )
         data = resp.json()
@@ -192,18 +197,61 @@ def make_slack_group_finder(token: str) -> FindGroupId:
             if data.get("error") == "ratelimited":
                 raise RateLimited(float(resp.headers.get("Retry-After", "1")))
             raise RuntimeError(f"Slack API error calling usergroups.list: {data.get('error')}")
-        return group_id_for_handle(data.get("usergroups") or [], handle)
+        return data
+
+    def find(handle: str) -> str:
+        return group_id_for_handle_across_pages(fetch_page, handle)
 
     return find
 
 
 def group_id_for_handle(usergroups: Iterable[Mapping[str, object]], handle: str) -> str:
-    """The id of the group in a `usergroups.list` payload whose handle is `handle`."""
+    """The id of the group in one `usergroups.list` page whose handle is `handle`."""
+    found = _group_id_in_page(usergroups, handle)
+    if found:
+        return found
+    raise RuntimeError(f"No Slack user group has the handle {HANDLE_PREFIX}{handle}")
+
+
+def usergroups_list_next_cursor(payload: Mapping[str, object]) -> str:
+    """The next `usergroups.list` page cursor, or "" when this page is the last."""
+    metadata = payload.get("response_metadata")
+    if not isinstance(metadata, Mapping):
+        return ""
+    return str(metadata.get("next_cursor") or "").strip()
+
+
+def group_id_for_handle_across_pages(
+    fetch_page: Callable[[str], Mapping[str, object]],
+    handle: str,
+) -> str:
+    """Resolve `handle` by walking `usergroups.list` pages.
+
+    `fetch_page` takes the cursor ("" for the first page) and returns one
+    successful page payload. Stops when the handle is found, when the next
+    cursor is empty, or when Slack repeats a cursor.
+    """
+    cursor = ""
+    seen = set()
+    while cursor not in seen:
+        seen.add(cursor)
+        payload = fetch_page(cursor)
+        found = _group_id_in_page(payload.get("usergroups") or [], handle)
+        if found:
+            return found
+        cursor = usergroups_list_next_cursor(payload)
+        if not cursor:
+            break
+    raise RuntimeError(f"No Slack user group has the handle {HANDLE_PREFIX}{handle}")
+
+
+def _group_id_in_page(usergroups: Iterable[Mapping[str, object]], handle: str) -> Optional[str]:
+    """The id of the group on this page whose handle is `handle`, else None."""
     wanted = handle.lower()
     for group in usergroups:
         if str(group.get("handle") or "").lower() == wanted and group.get("id"):
             return str(group["id"])
-    raise RuntimeError(f"No Slack user group has the handle {HANDLE_PREFIX}{handle}")
+    return None
 
 
 class ExpertResolver:

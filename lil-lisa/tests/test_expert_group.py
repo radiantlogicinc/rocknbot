@@ -21,6 +21,7 @@ from expert_group import (  # noqa: E402
     RateLimited,
     cache_seconds_from_env,
     group_id_for_handle,
+    group_id_for_handle_across_pages,
     group_ids_from_env,
 )
 
@@ -282,6 +283,57 @@ class HandleTests(unittest.TestCase):
     def test_handle_match_is_case_insensitive(self):
         groups = [{"id": "S1", "handle": "Other"}, {"id": "S2", "handle": "RockNBot-IDA-Experts"}]
         self.assertEqual(group_id_for_handle(groups, "rocknbot-ida-experts"), "S2")
+
+    def test_handle_lookup_follows_cursor_until_the_handle_is_found(self):
+        pages = [
+            {
+                "usergroups": [{"id": "S1", "handle": "other"}],
+                "response_metadata": {"next_cursor": "page-2"},
+            },
+            {
+                "usergroups": [{"id": "S2", "handle": "RockNBot-IDA-Experts"}],
+                "response_metadata": {"next_cursor": "page-3"},
+            },
+            {"usergroups": [{"id": "S3", "handle": "later"}]},
+        ]
+        cursors = []
+
+        async def fetch_page(cursor):
+            cursors.append(cursor)
+            return pages[len(cursors) - 1]
+
+        self.assertEqual(run(group_id_for_handle_across_pages(fetch_page, "rocknbot-ida-experts")), "S2")
+        self.assertEqual(cursors, ["", "page-2"])
+
+    def test_handle_lookup_fails_after_the_last_page(self):
+        pages = [
+            {
+                "usergroups": [{"id": "S1", "handle": "other"}],
+                "response_metadata": {"next_cursor": "page-2"},
+            },
+            {"usergroups": [{"id": "S2", "handle": "later"}]},
+        ]
+
+        async def fetch_page(cursor):
+            return pages[0] if cursor == "" else pages[1]
+
+        with self.assertRaises(RuntimeError) as ctx:
+            run(group_id_for_handle_across_pages(fetch_page, "missing"))
+        self.assertIn("@missing", str(ctx.exception))
+
+    def test_handle_lookup_stops_when_a_cursor_repeats(self):
+        calls = []
+
+        async def fetch_page(cursor):
+            calls.append(cursor)
+            return {
+                "usergroups": [{"id": "S1", "handle": "other"}],
+                "response_metadata": {"next_cursor": "again"},
+            }
+
+        with self.assertRaises(RuntimeError):
+            run(group_id_for_handle_across_pages(fetch_page, "missing"))
+        self.assertEqual(calls, ["", "again"])
 
 
 class ConfigTests(unittest.TestCase):

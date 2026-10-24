@@ -33,7 +33,7 @@ from expert_group import (
     ExpertResolver,
     RateLimited,
     cache_seconds_from_env,
-    group_id_for_handle,
+    group_id_for_handle_across_pages,
     group_ids_from_env,
 )
 from utils import (
@@ -114,13 +114,11 @@ async def _fetch_usergroup_members(usergroup_id):
     return list(resp.get("users") or [])
 
 
-async def _find_usergroup_id(handle):
-    """Slack `usergroups.list` lookup of an @handle's group id (needs `usergroups:read`).
-
-    Same error contract as _fetch_usergroup_members.
-    """
+async def _fetch_usergroup_page(cursor):
+    """One page of Slack `usergroups.list`. `cursor` is "" for the first page."""
     try:
-        resp = await app.client.usergroups_list()
+        kwargs = {"cursor": cursor} if cursor else {}
+        return await app.client.usergroups_list(**kwargs)
     except SlackApiError as exc:
         response = getattr(exc, "response", None)
         error = (response.get("error") if response is not None else None) or ""
@@ -128,7 +126,15 @@ async def _find_usergroup_id(handle):
             headers = getattr(response, "headers", {}) or {}
             raise RateLimited(float(headers.get("Retry-After", 1))) from exc
         raise
-    return group_id_for_handle(resp.get("usergroups") or [], handle)
+
+
+async def _find_usergroup_id(handle):
+    """Slack `usergroups.list` lookup of an @handle's group id (needs `usergroups:read`).
+
+    Follows `response_metadata.next_cursor` until the handle is found or Slack
+    has no further page. Same error contract as _fetch_usergroup_members.
+    """
+    return await group_id_for_handle_across_pages(_fetch_usergroup_page, handle)
 
 
 async def _channel_info(channel_id):

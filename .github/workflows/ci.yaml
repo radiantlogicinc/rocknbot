@@ -39,15 +39,60 @@ jobs:
           echo "server=$(python3 -c 'import tomllib; print(tomllib.load(open("LilLisa_Server/pyproject.toml", "rb"))["project"]["version"])')" >> "$GITHUB_OUTPUT"
           echo "slack=$(python3 -c 'import tomllib; print(tomllib.load(open("lil-lisa/pyproject.toml", "rb"))["project"]["version"])')" >> "$GITHUB_OUTPUT"
       -
+        # :staging moves on every run. A pyproject version tag is published only
+        # from main, and only when Docker Hub does not already have it, so a
+        # later run (including a develop build of the same version) cannot
+        # replace an image a deployment has pinned.
+        name: Select image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          server_tags="radiantone/rocknbot-server:staging"
+          slack_tags="radiantone/rocknbot-slack:staging"
+
+          version_tag_absent() {
+            local image="$1"
+            local output
+            if output="$(docker buildx imagetools inspect "$image" 2>&1)"; then
+              echo "::warning title=Version tag already published::${image} already exists and will not be overwritten"
+              return 1
+            fi
+            if printf '%s\n' "$output" | grep -Eqi 'manifest unknown|: not found|no such manifest'; then
+              return 0
+            fi
+            echo "::error title=Could not check version tag::Refusing to push ${image} because the registry check failed: ${output}"
+            exit 1
+          }
+
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            server_version="radiantone/rocknbot-server:${{ steps.versions.outputs.server }}"
+            slack_version="radiantone/rocknbot-slack:${{ steps.versions.outputs.slack }}"
+            if version_tag_absent "$server_version"; then
+              server_tags="${server_tags}"$'\n'"${server_version}"
+            fi
+            if version_tag_absent "$slack_version"; then
+              slack_tags="${slack_tags}"$'\n'"${slack_version}"
+            fi
+          else
+            echo "Not on main (${GITHUB_REF}); publishing staging tags only"
+          fi
+
+          {
+            echo "server<<EOF"
+            printf '%s\n' "$server_tags"
+            echo "EOF"
+            echo "slack<<EOF"
+            printf '%s\n' "$slack_tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      -
         name: Build and push
         uses: docker/build-push-action@v6
         with:
           push: true
           file: LilLisa_Server/build/dockerfile_prod
           context: LilLisa_Server
-          tags: |
-            radiantone/rocknbot-server:staging
-            radiantone/rocknbot-server:${{ steps.versions.outputs.server }}
+          tags: ${{ steps.tags.outputs.server }}
           provenance: true
           sbom: true
       -
@@ -67,8 +112,6 @@ jobs:
           push: true
           file: lil-lisa/build/dockerfile_prod
           context: lil-lisa
-          tags: |
-            radiantone/rocknbot-slack:staging
-            radiantone/rocknbot-slack:${{ steps.versions.outputs.slack }}
+          tags: ${{ steps.tags.outputs.slack }}
           provenance: true
           sbom: true

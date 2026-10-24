@@ -295,6 +295,71 @@ class HandleTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 find("ida-experts")
 
+    def test_slack_group_finder_follows_cursor_until_the_handle_is_found(self):
+        find = eg.make_slack_group_finder("xoxb-test")
+        pages = [
+            FakeResponse({
+                "ok": True,
+                "usergroups": [{"id": "S_OTHER", "handle": "other"}],
+                "response_metadata": {"next_cursor": "page-2"},
+            }),
+            FakeResponse({
+                "ok": True,
+                "usergroups": [{"id": "S_IDA", "handle": "IDA-Experts"}],
+                "response_metadata": {"next_cursor": "page-3"},
+            }),
+            FakeResponse({"ok": True, "usergroups": [{"id": "S_LATER", "handle": "later"}]}),
+        ]
+        with patch.object(eg.requests, "get", side_effect=pages) as get:
+            self.assertEqual(find("ida-experts"), "S_IDA")
+        self.assertEqual(get.call_count, 2, "stops once the handle is found")
+        self.assertIsNone(get.call_args_list[0].kwargs["params"])
+        self.assertEqual(get.call_args_list[1].kwargs["params"], {"cursor": "page-2"})
+
+    def test_slack_group_finder_unknown_handle_after_the_last_page(self):
+        find = eg.make_slack_group_finder("xoxb-test")
+        pages = [
+            FakeResponse({
+                "ok": True,
+                "usergroups": [{"id": "S_OTHER", "handle": "other"}],
+                "response_metadata": {"next_cursor": "page-2"},
+            }),
+            FakeResponse({"ok": True, "usergroups": [{"id": "S_LATER", "handle": "later"}]}),
+        ]
+        with patch.object(eg.requests, "get", side_effect=pages) as get:
+            with self.assertRaises(RuntimeError) as ctx:
+                find("ida-experts")
+        self.assertEqual(get.call_count, 2)
+        self.assertIn("@ida-experts", str(ctx.exception))
+
+    def test_slack_group_finder_stops_when_a_cursor_repeats(self):
+        find = eg.make_slack_group_finder("xoxb-test")
+        page = FakeResponse({
+            "ok": True,
+            "usergroups": [{"id": "S_OTHER", "handle": "other"}],
+            "response_metadata": {"next_cursor": "again"},
+        })
+        with patch.object(eg.requests, "get", return_value=page) as get:
+            with self.assertRaises(RuntimeError):
+                find("ida-experts")
+        # First page, then the repeated cursor once, then stop.
+        self.assertEqual(get.call_count, 2)
+
+    def test_slack_group_finder_rate_limit_on_a_later_page(self):
+        find = eg.make_slack_group_finder("xoxb-test")
+        pages = [
+            FakeResponse({
+                "ok": True,
+                "usergroups": [{"id": "S_OTHER", "handle": "other"}],
+                "response_metadata": {"next_cursor": "page-2"},
+            }),
+            FakeResponse({"ok": False, "error": "ratelimited"}, headers={"Retry-After": "4"}),
+        ]
+        with patch.object(eg.requests, "get", side_effect=pages):
+            with self.assertRaises(eg.RateLimited) as ctx:
+                find("ida-experts")
+        self.assertEqual(ctx.exception.retry_after, 4.0)
+
     def test_from_env_wires_the_slack_group_finder(self):
         payload = {"ok": True, "usergroups": [{"id": "S_IDA", "handle": "ida-experts"}]}
         resolver = eg.ExpertResolver.from_env(
