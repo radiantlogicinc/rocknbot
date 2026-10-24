@@ -30,9 +30,7 @@ CHANNEL_KEYS: Tuple[str, ...] = (
     "ADMIN_CHANNEL_ID_IDA",
     "ADMIN_CHANNEL_ID_IDDM",
     "ADMIN_CHANNEL_ID_IDO",
-    "TECHSUPPORT_CHANNEL_ID_IDA",
-    "TECHSUPPORT_CHANNEL_ID_IDDM",
-    "TECHSUPPORT_CHANNEL_ID_IDO",
+    "TECHSUPPORT_CHANNEL_ID",
 )
 
 # The injected Slack call: channel id -> conversations.info JSON payload.

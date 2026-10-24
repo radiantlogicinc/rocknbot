@@ -58,8 +58,8 @@ class PreflightTestCase(unittest.TestCase):
         self.sync = {
             "SLACK_BOT_TOKEN": "xoxb-valid",
             "TECHSUPPORT_CHANNEL_ID": "C_TS",
-            "PRODUCT_CHANNEL_ID_IDA": "C_IDA",
-            "PRODUCT_CHANNEL_ID_IDDM": "C_IDDM",
+            "CHANNEL_ID_IDA": "C_IDA",
+            "CHANNEL_ID_IDDM": "C_IDDM",
             "EXPERT_GROUP_ID_IDA": "S_IDA",
             "EXPERT_GROUP_ID_IDDM": "S_IDDM",
         }
@@ -132,7 +132,7 @@ class HappyPathTests(PreflightTestCase):
 
 class BlockingKeyTests(PreflightTestCase):
     # Only the keys without which the pipeline cannot ingest AT ALL. Every
-    # product-channel-scan key (PRODUCT_CHANNEL_ID_*, EXPERT_GROUP_ID_*) is
+    # product-channel-scan key (CHANNEL_ID_*, EXPERT_GROUP_ID_*) is
     # deliberately absent: the scan runs after the techsupport ingest loop and
     # its failures are caught per product, so those are DEGRADED. See
     # _check_product_scan()'s docstring and ProductScanTests.
@@ -228,23 +228,6 @@ class ResolutionTests(PreflightTestCase):
         self.assertEqual(preflight.GITHUB_ENV_PATH, preflight.PACKAGE_ROOT / "env" / "github_push.env")
 
 
-class ChannelMismatchTests(PreflightTestCase):
-    def test_mismatched_alias_is_blocking(self):
-        self.sync["TECHSUPPORT_CHANNEL_ID_IDA"] = "C_TS"
-        self.sync["TECHSUPPORT_CHANNEL_ID_IDDM"] = "C_OTHER"
-        result = self.run_preflight()
-        self.assertEqual(len(result.problems), 1)
-        problem = result.problems[0]
-        self.assertIs(problem.severity, Severity.BLOCKING)
-        self.assertIn("TECHSUPPORT_CHANNEL_ID_IDDM", problem.keys)
-        self.assertNotIn("TECHSUPPORT_CHANNEL_ID_IDA", problem.keys)
-
-    def test_matching_aliases_are_fine(self):
-        for product in ("IDA", "IDDM", "IDO"):
-            self.sync[f"TECHSUPPORT_CHANNEL_ID_{product}"] = "C_TS"
-        self.assertEqual(self.run_preflight().problems, ())
-
-
 class GithubTests(PreflightTestCase):
     def test_non_https_url_is_blocking(self):
         for url in ("git@github.com:org/repo.git", "ssh://git@github.com/org/repo.git", "http://github.com/o/r"):
@@ -290,7 +273,7 @@ class ProductScanTests(PreflightTestCase):
     # may ever refuse startup. That matters because the scan defaults to ON:
     # promoting any of them would silently make four extra keys mandatory for
     # every deployment.
-    SCAN_KEYS = {"PRODUCT_CHANNEL_ID_IDA", "PRODUCT_CHANNEL_ID_IDDM", "EXPERT_GROUP_ID_IDA", "EXPERT_GROUP_ID_IDDM"}
+    SCAN_KEYS = {"CHANNEL_ID_IDA", "CHANNEL_ID_IDDM", "EXPERT_GROUP_ID_IDA", "EXPERT_GROUP_ID_IDDM"}
 
     def _strip_scan_keys(self):
         for key in self.SCAN_KEYS:
@@ -305,7 +288,7 @@ class ProductScanTests(PreflightTestCase):
     def test_missing_product_channel_alone_still_starts(self):
         """Scanning only one product is a supported deployment, so a missing
         channel id must stay out of the blocking tier entirely."""
-        channel_keys = {"PRODUCT_CHANNEL_ID_IDA", "PRODUCT_CHANNEL_ID_IDDM"}
+        channel_keys = {"CHANNEL_ID_IDA", "CHANNEL_ID_IDDM"}
         for key in channel_keys:
             self.sync.pop(key)
         result = self.run_preflight()
@@ -343,9 +326,27 @@ class ProductScanTests(PreflightTestCase):
         self.assertEqual(self.run_preflight().problems, ())
 
     def test_ido_keys_stay_optional(self):
-        self.sync.pop("PRODUCT_CHANNEL_ID_IDO", None)
+        self.sync.pop("CHANNEL_ID_IDO", None)
         self.sync.pop("EXPERT_GROUP_ID_IDO", None)
         self.assertEqual(self.run_preflight().problems, ())
+
+    def test_lil_lisa_env_supplies_channel_ids_when_the_sync_file_does_not(self):
+        sync_path = self.root / "cron" / "env" / "techsupport_sync.env"
+        sync_path.parent.mkdir(parents=True)
+        sync_path.write_text(
+            "SLACK_BOT_TOKEN=xoxb-valid\n"
+            "TECHSUPPORT_CHANNEL_ID=C_TS\n"
+            "EXPERT_GROUP_ID_IDA=S_IDA\n"
+            "EXPERT_GROUP_ID_IDDM=S_IDDM\n"
+        )
+        bot = self.root / "lil-lisa.env"
+        bot.write_text("CHANNEL_ID_IDA=C_IDA\nCHANNEL_ID_IDDM=C_IDDM\nSLACK_BOT_TOKEN=xoxb-bot\n")
+        with patch("paths.bot_env_path", return_value=bot), patch(
+            "techsupport_preflight.bot_env_path", return_value=bot
+        ):
+            result = self.run_preflight(sync_env=None, environ={})
+        self.assertEqual(result.problems, ())
+        self.assertIn(bot, result.sources)
 
 
 @unittest.skipIf(RUNNING_AS_ROOT, ROOT_SKIP_REASON)
@@ -464,7 +465,6 @@ class WritabilityHelperTests(unittest.TestCase):
 class RedactionTests(PreflightTestCase):
     def test_no_secret_values_in_report(self):
         self.sync["SLACK_BOT_TOKEN"] = SECRET_SLACK
-        self.sync["TECHSUPPORT_CHANNEL_ID_IDA"] = "C_MISMATCH_SECRETISH"
         self.github["GITHUB_TOKEN"] = SECRET_PAT
         self.github["GITHUB_REPO_URL"] = SECRET_URL
         self.lillisa["AUTHENTICATION_KEY"] = SECRET_AUTH
@@ -472,7 +472,7 @@ class RedactionTests(PreflightTestCase):
         self.sync.pop("EXPERT_GROUP_ID_IDA")
         self.environ = {"SOME_OTHER_SECRET": "env-dump-canary"}
         result = self.run_preflight()
-        self.assertGreaterEqual(len(result.problems), 4)
+        self.assertGreaterEqual(len(result.problems), 3)
         for strict in (True, False):
             report = preflight.format_preflight_report(result, strict=strict)
             for secret in (

@@ -5,9 +5,8 @@ End-to-end nightly techsupport pipeline, tying together the three pieces
 built in earlier steps:
     1. nightly_techsupport_sync.sync() -- detect new/updated threads in the
        one shared techsupport Slack channel (TECHSUPPORT_CHANNEL_ID in
-       cron/env/techsupport_sync.env; the same channel is used for IDA,
-       IDDM, and IDO -- see lil-lisa/app_envfiles/lil-lisa.env's
-       TECHSUPPORT_CHANNEL_ID_IDA/IDDM/IDO, which are all equal).
+       cron/env/techsupport_sync.env; the same variable lil-lisa uses for
+       every product).
     2. techsupport_classifier.classify_thread() -- classify each changed
        thread as useful / conclusive.
     3. techsupport_qa_ingest.add_verified_qa_pair() -- for threads that are
@@ -59,9 +58,9 @@ before that tracking existed can't be located and are left untouched, logged
 as an error for that thread rather than silently skipped.
 
 A separate pass, run_product_channel_pass(), runs after the techsupport loop
-and before the GitHub push: the product channels (PRODUCT_CHANNEL_ID_IDA /
-_IDDM / _IDO in cron/env/techsupport_sync.env) are scanned for threads where a
-member of that product's expert user group replied to a Lil Lisa answer. A
+and before the GitHub push: the product channels (CHANNEL_ID_IDA / _IDDM /
+_IDO from lil-lisa.env, or the process environment) are scanned for threads
+where a member of that product's expert user group replied to a Lil Lisa answer. A
 thread with no expert reply never reaches an LLM call. When the answer in that
 thread cited a verified entry (recorded at answer time by invoke(), read back
 via get_cited_entry_title), the expert's reply SUPERSEDES that entry
@@ -644,9 +643,9 @@ def run_product_channel_pass(
 ) -> Dict[str, Any]:
     """Scan each configured product channel for expert corrections.
 
-    One pass per product (PRODUCT_CHANNEL_ID_IDA/_IDDM/_IDO in
-    cron/env/techsupport_sync.env; a product with no channel id is not
-    scanned). Each channel gets its own slice of techsupport_sync_state.json
+    One pass per product (CHANNEL_ID_IDA / _IDDM / _IDO, the same variables the
+    Slack bot uses; a product with no channel id is not scanned). Each channel
+    gets its own slice of techsupport_sync_state.json
     and its own TECHSUPPORT_SYNC_INTERVAL_HOURS gate, and is capped at
     PRODUCT_SCAN_MAX_THREADS_PER_RUN threads per run. A channel being scanned
     for the first time is bounded by PRODUCT_SCAN_INITIAL_LOOKBACK_DAYS
@@ -673,7 +672,7 @@ def run_product_channel_pass(
     bot_user_id = (slack_env.get("LIL_LISA_SLACK_USERID") or "").strip() or None
     channels = product_channel_ids(slack_env)
     if not channels:
-        logger.info("No PRODUCT_CHANNEL_ID_* configured -- nothing to scan for expert corrections")
+        logger.info("No CHANNEL_ID_IDA / _IDDM / _IDO configured -- nothing to scan for expert corrections")
         return {"enabled": True, "products": {}, "totals": totals, "reason": "no_product_channels"}
 
     if errors is None:

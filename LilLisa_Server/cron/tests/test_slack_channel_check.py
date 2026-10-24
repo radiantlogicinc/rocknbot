@@ -46,12 +46,12 @@ class FakeResponse:
 class LogConfiguredChannelsTests(unittest.TestCase):
     def test_each_configured_channel_is_logged_with_its_name(self):
         info = FakeInfo({"C1": channel("techsupport", is_member=True), "C2": channel("rocknbot-ida")})
-        env = {"TECHSUPPORT_CHANNEL_ID": "C1", "PRODUCT_CHANNEL_ID_IDA": " C2 ", "PRODUCT_CHANNEL_ID_IDDM": ""}
+        env = {"TECHSUPPORT_CHANNEL_ID": "C1", "CHANNEL_ID_IDA": " C2 ", "CHANNEL_ID_IDDM": ""}
 
         with self.assertLogs(scc.logger, level="INFO") as logs:
             result = scc.log_configured_channels(env, fetch_channel_info=info)
 
-        self.assertEqual(result, {"TECHSUPPORT_CHANNEL_ID": "#techsupport", "PRODUCT_CHANNEL_ID_IDA": "#rocknbot-ida"})
+        self.assertEqual(result, {"TECHSUPPORT_CHANNEL_ID": "#techsupport", "CHANNEL_ID_IDA": "#rocknbot-ida"})
         self.assertEqual(info.calls, ["C1", "C2"])
         self.assertIn("TECHSUPPORT_CHANNEL_ID = C1 (#techsupport)", logs.output[0])
 
@@ -67,8 +67,8 @@ class LogConfiguredChannelsTests(unittest.TestCase):
         env = {
             "TECHSUPPORT_CHANNEL_ID": "C1",
             "ADMIN_CHANNEL_ID": "C2",
-            "PRODUCT_CHANNEL_ID_IDA": "C3",
-            "PRODUCT_CHANNEL_ID_IDDM": "C4",
+            "CHANNEL_ID_IDA": "C3",
+            "CHANNEL_ID_IDDM": "C4",
         }
 
         with self.assertLogs(scc.logger, level="WARNING") as logs:
@@ -77,8 +77,8 @@ class LogConfiguredChannelsTests(unittest.TestCase):
         self.assertEqual(len(logs.output), 4)
         self.assertIn("channel_not_found", result["TECHSUPPORT_CHANNEL_ID"])
         self.assertIn("ARCHIVED", result["ADMIN_CHANNEL_ID"])
-        self.assertIn("bot is NOT a member", result["PRODUCT_CHANNEL_ID_IDA"])
-        self.assertIn("network down", result["PRODUCT_CHANNEL_ID_IDDM"])
+        self.assertIn("bot is NOT a member", result["CHANNEL_ID_IDA"])
+        self.assertIn("network down", result["CHANNEL_ID_IDDM"])
 
     def test_missing_scope_names_the_scopes(self):
         ok, text = scc.describe_channel({"ok": False, "error": "missing_scope"})

@@ -46,11 +46,9 @@ Deliberately self-contained (stdlib + dotenv only): no FastAPI, LanceDB,
 llama_index, voyageai, dspy, requests, git, or src.* imports, for the same
 reason nightly_techsupport_sync.py and github_anchor.py are standalone -- it
 must be cheap to import at server startup and trivially unit-testable. That is
-also why the GITHUB_REPO_URL rule (github_sync._require_https_repo_url) and the
-TECHSUPPORT_CHANNEL_ID_* rule
-(nightly_techsupport_sync.assert_pipeline_matches_product_channel_ids) are
-re-stated here rather than imported: importing those modules would drag in
-GitPython and requests. Keep the copies aligned with the originals.
+also why the GITHUB_REPO_URL rule (github_sync._require_https_repo_url) is
+re-stated here rather than imported: importing that module would drag in
+GitPython. Keep the copy aligned with the original.
 
 What is intentionally NOT required:
   * The TECHSUPPORT_QA_PAIRS LanceDB table and techsupport_qa_pairs.md -- both
@@ -81,7 +79,13 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
-from paths import LILLISA_SERVER_ENV_PATH, LILLISA_SERVER_ROOT, PACKAGE_ROOT
+from paths import (
+    LILLISA_SERVER_ENV_PATH,
+    LILLISA_SERVER_ROOT,
+    PACKAGE_ROOT,
+    bot_env_path,
+    read_lil_lisa_channel_ids,
+)
 
 from src.techsupport_state_paths import resolve_state_dir, resolve_verified_qa_dir
 
@@ -112,8 +116,6 @@ PRODUCTS: Tuple[str, ...] = ("IDA", "IDDM", "IDO")
 # the resolver raises ValueError when their group id is unset). IDO is only
 # deployed for some workspaces, so its keys stay optional.
 REQUIRED_SCAN_PRODUCTS: Tuple[str, ...] = ("IDA", "IDDM")
-TECHSUPPORT_CHANNEL_ALIAS_KEYS: Tuple[str, ...] = tuple(f"TECHSUPPORT_CHANNEL_ID_{p}" for p in PRODUCTS)
-
 # Mirrors nightly_pipeline.DEFAULT_SCAN_PRODUCT_CHANNELS / FALSEY exactly --
 # including "" meaning false -- so preflight and the pipeline always agree on
 # whether the product-channel pass will run.
@@ -333,7 +335,14 @@ def run_preflight(
     lillisa_env_path = lillisa_env_path or LILLISA_SERVER_ENV_PATH
     server_root = server_root or LILLISA_SERVER_ROOT
 
-    sync = _overlay(sync_env if sync_env is not None else _read_env_file(sync_env_path), environ)
+    if sync_env is None:
+        # CHANNEL_ID_* live in lil-lisa.env. techsupport_sync.env and the
+        # process environment still override them when set.
+        sync_file = read_lil_lisa_channel_ids()
+        sync_file.update(_read_env_file(sync_env_path))
+    else:
+        sync_file = {k: v for k, v in sync_env.items() if v is not None}
+    sync = _overlay(sync_file, environ)
     github = _overlay(github_env if github_env is not None else _read_env_file(github_env_path), environ)
     lillisa = _overlay(lillisa_env if lillisa_env is not None else _read_env_file(lillisa_env_path), environ)
 
@@ -344,9 +353,14 @@ def run_preflight(
     problems.extend(_check_github(github, github_env_path))
     problems.extend(_check_writable_dirs(lillisa, lillisa_env_path, server_root))
 
+    sources: List[Path] = [sync_env_path, github_env_path, lillisa_env_path]
+    # Only when this call actually read lil-lisa.env. Injected sync_env (tests,
+    # and any caller that already resolved the config) does not consult it.
+    if sync_env is None and bot_env_path().is_file():
+        sources.append(bot_env_path())
     return PreflightResult(
         problems=tuple(problems),
-        sources=(sync_env_path, github_env_path, lillisa_env_path),
+        sources=tuple(sources),
     )
 
 
@@ -365,32 +379,6 @@ def _check_slack(sync: Mapping[str, str], sync_env_path: Path) -> List[Preflight
                 )
             )
 
-    canonical = _clean(sync.get("TECHSUPPORT_CHANNEL_ID"))
-    if canonical:
-        # Same rule as assert_pipeline_matches_product_channel_ids(), which
-        # raises inside load_env() -- i.e. a mismatch is just as fatal as a
-        # missing token. Report key names only, not the channel ids.
-        mismatched = [
-            key
-            for key in TECHSUPPORT_CHANNEL_ALIAS_KEYS
-            if _clean(sync.get(key)) and _clean(sync.get(key)) != canonical
-        ]
-        if mismatched:
-            problems.append(
-                PreflightProblem(
-                    severity=Severity.BLOCKING,
-                    keys=tuple(mismatched) + ("TECHSUPPORT_CHANNEL_ID",),
-                    problem=(
-                        f"{', '.join(mismatched)} must equal TECHSUPPORT_CHANNEL_ID when set "
-                        "(the pipeline refuses to run on mismatched techsupport channel ids)."
-                    ),
-                    remediation=(
-                        f"Make {', '.join(mismatched)} equal to TECHSUPPORT_CHANNEL_ID, or remove them, in "
-                        f"{sync_env_path} (Secret key {sync_env_path.name}, mounted with subPath) or in the "
-                        "container environment."
-                    ),
-                )
-            )
     return problems
 
 
@@ -417,10 +405,11 @@ def _check_product_scan(
       * EXPERT_GROUP_ID_* makes expert_group.ExpertResolver raise ValueError
         for that product, which run_product_channel_pass() already catches per
         product and reports as errored rather than quietly skipping.
-      * PRODUCT_CHANNEL_ID_* is an explicitly supported per-product opt-out:
-        run_product_channel_pass()'s docstring and techsupport_sync.env.example
-        both state that "a product with no channel id is not scanned", and
-        product_channel_ids() simply leaves it out of the dict.
+      * CHANNEL_ID_* is an explicitly supported per-product opt-out:
+        run_product_channel_pass()'s docstring states that "a product with no
+        channel id is not scanned", and product_channel_ids() simply leaves
+        it out of the dict. These are the Slack bot's channel variables
+        (lil-lisa.env), not a second copy in techsupport_sync.env.
 
     Keeping these out of the BLOCKING tier matters for blast radius. The scan
     defaults to ON (DEFAULT_SCAN_PRODUCT_CHANNELS = "true"), so treating them
@@ -436,25 +425,40 @@ def _check_product_scan(
         f"{lillisa_env_path} or the container environment."
     )
     problems: List[PreflightProblem] = []
-    for severity, template, why in (
+    for template, why, for_channel in (
         (
-            Severity.DEGRADED,
-            "PRODUCT_CHANNEL_ID_{product}",
+            "CHANNEL_ID_{product}",
             " but TECHSUPPORT_SCAN_PRODUCT_CHANNELS is enabled, so that product's channel is not scanned "
             "and its expert corrections are never picked up (every other product still scans)",
+            True,
         ),
         (
-            Severity.DEGRADED,
             "EXPERT_GROUP_ID_{product}",
             " but TECHSUPPORT_SCAN_PRODUCT_CHANNELS is enabled, so the expert resolver raises for that "
             "product and its expert corrections are never picked up (techsupport channel ingest is "
             "unaffected)",
+            False,
         ),
     ):
         for product in REQUIRED_SCAN_PRODUCTS:
             key = template.format(product=product)
-            if not _clean(sync.get(key)):
-                problems.append(_missing(severity, key, sync_env_path, why, disable_hint))
+            if _clean(sync.get(key)):
+                continue
+            if for_channel:
+                problems.append(
+                    PreflightProblem(
+                        severity=Severity.DEGRADED,
+                        keys=(key,),
+                        problem=f"{key} is not set{why}.",
+                        remediation=(
+                            f"{key} is set in lil-lisa/app_envfiles/lil-lisa.env for the Slack bot. Inject that "
+                            f"same {key} into this container's environment (the API image does not contain "
+                            f"lil-lisa.env). Do not keep a second copy under another name. {disable_hint}"
+                        ),
+                    )
+                )
+            else:
+                problems.append(_missing(Severity.DEGRADED, key, sync_env_path, why, disable_hint))
     return problems
 
 
