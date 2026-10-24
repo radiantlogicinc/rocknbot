@@ -13,7 +13,8 @@ mechanical: this one is synchronous and its default fetcher uses `requests`
 
 Configuration (LilLisa_Server/cron/env/techsupport_sync.env, overridden by the
 process environment -- the same load_env pattern as nightly_techsupport_sync.py):
-    EXPERT_GROUP_ID_IDA / _IDDM          Slack user group IDs (e.g. S0123ABCD).
+    EXPERT_GROUP_ID_IDA / _IDDM          Slack user group ID (e.g. S0123ABCD) or
+                                         @handle (e.g. @ida-experts).
                                          REQUIRED: the resolver raises if unset.
     EXPERT_GROUP_ID_IDO                  Optional -- IDO is only deployed for
                                          some workspaces. With no group, nobody
@@ -33,6 +34,11 @@ Shared rules (identical in both copies):
      outage is survivable. With nothing cached, ExpertLookupError is raised so
      the failure is loud instead of silently making everyone a non-expert.
   5. An unconfigured optional product resolves to [] without any Slack call.
+  6. A value starting with "@" is a user group handle. It is resolved to its ID
+     once via Slack `usergroups.list` (same `usergroups:read` scope), following
+     `response_metadata.next_cursor` until the handle is found or the last page
+     is reached. The ID is kept for the life of the process. An unknown handle
+     is a failed lookup under rule 4. Any other value is used as the ID unchanged.
 
 Usage:
     from expert_group import is_expert, expert_user_ids
@@ -65,6 +71,10 @@ logger = logging.getLogger(__name__)
 
 # The injected Slack call: usergroup id -> member user ids.
 FetchMembers = Callable[[str], List[str]]
+# The injected Slack call: usergroup handle (without "@") -> usergroup id.
+FindGroupId = Callable[[str], str]
+
+HANDLE_PREFIX = "@"
 
 
 class RateLimited(Exception):
@@ -165,14 +175,95 @@ def make_slack_fetcher(token: str) -> FetchMembers:
     return fetch
 
 
+def make_slack_group_finder(token: str) -> FindGroupId:
+    """Default handle lookup: Slack `usergroups.list` over `requests`.
+
+    Follows `response_metadata.next_cursor` until the handle is found or Slack
+    has no further page. Handles match case-insensitively. Raises RateLimited
+    on `ratelimited`, and RuntimeError for any other Slack error or when no
+    group has the handle.
+    """
+
+    def fetch_page(cursor: str) -> Mapping[str, object]:
+        params = {"cursor": cursor} if cursor else None
+        resp = requests.get(
+            f"{SLACK_API_BASE}/usergroups.list",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params,
+            timeout=SLACK_TIMEOUT_SECONDS,
+        )
+        data = resp.json()
+        if not data.get("ok"):
+            if data.get("error") == "ratelimited":
+                raise RateLimited(float(resp.headers.get("Retry-After", "1")))
+            raise RuntimeError(f"Slack API error calling usergroups.list: {data.get('error')}")
+        return data
+
+    def find(handle: str) -> str:
+        return group_id_for_handle_across_pages(fetch_page, handle)
+
+    return find
+
+
+def group_id_for_handle(usergroups: Iterable[Mapping[str, object]], handle: str) -> str:
+    """The id of the group in one `usergroups.list` page whose handle is `handle`."""
+    found = _group_id_in_page(usergroups, handle)
+    if found:
+        return found
+    raise RuntimeError(f"No Slack user group has the handle {HANDLE_PREFIX}{handle}")
+
+
+def usergroups_list_next_cursor(payload: Mapping[str, object]) -> str:
+    """The next `usergroups.list` page cursor, or "" when this page is the last."""
+    metadata = payload.get("response_metadata")
+    if not isinstance(metadata, Mapping):
+        return ""
+    return str(metadata.get("next_cursor") or "").strip()
+
+
+def group_id_for_handle_across_pages(
+    fetch_page: Callable[[str], Mapping[str, object]],
+    handle: str,
+) -> str:
+    """Resolve `handle` by walking `usergroups.list` pages.
+
+    `fetch_page` takes the cursor ("" for the first page) and returns one
+    successful page payload. Stops when the handle is found, when the next
+    cursor is empty, or when Slack repeats a cursor.
+    """
+    cursor = ""
+    seen = set()
+    while cursor not in seen:
+        seen.add(cursor)
+        payload = fetch_page(cursor)
+        found = _group_id_in_page(payload.get("usergroups") or [], handle)
+        if found:
+            return found
+        cursor = usergroups_list_next_cursor(payload)
+        if not cursor:
+            break
+    raise RuntimeError(f"No Slack user group has the handle {HANDLE_PREFIX}{handle}")
+
+
+def _group_id_in_page(usergroups: Iterable[Mapping[str, object]], handle: str) -> Optional[str]:
+    """The id of the group on this page whose handle is `handle`, else None."""
+    wanted = handle.lower()
+    for group in usergroups:
+        if str(group.get("handle") or "").lower() == wanted and group.get("id"):
+            return str(group["id"])
+    return None
+
+
 class ExpertResolver:
     """Per-product expert membership from Slack user groups, with a TTL cache.
 
     Args:
-        group_ids: product -> Slack usergroup id (None for a product with no
-            group; only allowed for products outside `required_products`).
+        group_ids: product -> Slack usergroup id or @handle (None for a product
+            with no group; only allowed for products outside `required_products`).
         fetch_members: callable taking a usergroup id and returning its member
             user ids. Must raise `RateLimited` for Slack `ratelimited`.
+        find_group_id: callable taking a handle (without "@") and returning the
+            usergroup id. Only called for @handle values.
         cache_seconds: membership TTL in seconds (default 300).
         required_products: products that must have a group id (default IDA and
             IDDM). Tests pass () to build partial resolvers.
@@ -190,13 +281,16 @@ class ExpertResolver:
         required_products: Sequence[str] = REQUIRED_PRODUCTS,
         time_source: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        find_group_id: Optional[FindGroupId] = None,
     ):
         self.group_ids: Dict[str, Optional[str]] = dict(group_ids or {})
         self._fetch_members = fetch_members
+        self._find_group_id = find_group_id
         self.cache_seconds = float(cache_seconds)
         self._now = time_source
         self._sleep = sleep
         self._cache: Dict[str, _Entry] = {}
+        self._resolved_ids: Dict[str, str] = {}
 
         missing = self.unconfigured_products(required_products)
         if missing:
@@ -213,6 +307,7 @@ class ExpertResolver:
         """
         env = env if env is not None else load_env()
         kwargs.setdefault("fetch_members", make_slack_fetcher(env.get("SLACK_BOT_TOKEN", "")))
+        kwargs.setdefault("find_group_id", make_slack_group_finder(env.get("SLACK_BOT_TOKEN", "")))
         return cls(
             group_ids=group_ids_from_env(env),
             cache_seconds=cache_seconds_from_env(env),
@@ -270,16 +365,28 @@ class ExpertResolver:
         try:
             if self._fetch_members is None:
                 raise RuntimeError(f"No Slack fetcher configured for expert group {group_id} ({product})")
+            usergroup_id = self._usergroup_id(group_id)
             try:
-                members = self._fetch_once(group_id)
+                members = self._fetch_once(usergroup_id)
             except RateLimited as exc:
                 self._sleep(exc.retry_after)
-                members = self._fetch_once(group_id)
+                members = self._fetch_once(usergroup_id)
         except Exception as exc:  # pylint:disable=broad-except
             return self._serve_cached_or_raise(product, group_id, exc)
 
         self._cache[product] = _Entry(list(members), self._now() + self.cache_seconds)
         return list(members)
+
+    def _usergroup_id(self, group_id: str) -> str:
+        """`group_id` unchanged, or the id behind an @handle (looked up once)."""
+        if not group_id.startswith(HANDLE_PREFIX):
+            return group_id
+        if group_id not in self._resolved_ids:
+            if self._find_group_id is None:
+                raise RuntimeError(f"No Slack handle lookup configured for expert group {group_id}")
+            self._resolved_ids[group_id] = self._find_group_id(group_id[len(HANDLE_PREFIX):])
+            logger.info("Resolved Slack expert user group %s to %s", group_id, self._resolved_ids[group_id])
+        return self._resolved_ids[group_id]
 
     def _fetch_once(self, group_id: str) -> List[str]:
         members = self._fetch_members(group_id)  # type: ignore[misc]

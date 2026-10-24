@@ -571,6 +571,7 @@ async def lifespan(_app: FastAPI):
     # this module (src.main) -- see tests/test_techsupport_cron_product_scan.py's
     # docstring -- so this call site stays thin on purpose.
     techsupport_cron.run_startup_preflight()
+    techsupport_cron.log_slack_channels()
 
     # Reconcile the verified techsupport markdown with GITHUB_REPO_URL (the
     # side with more entries wins: pull if the repo is ahead, push if local
@@ -584,7 +585,9 @@ async def lifespan(_app: FastAPI):
     # otherwise never build it at all. The call self-gates on a row-count vs.
     # entry-count comparison, so the common restart is a no-op. Like the
     # golden QA rebuild, a failure raises and aborts startup.
-    techsupport_cron.run_startup_bootstrap()
+    techsupport_cron.run_startup_bootstrap(
+        reload_retrievers=lambda: create_qa_pairs_lancedb_retrievers_and_indices(LANCEDB_FOLDERPATH)
+    )
 
     pipeline_scheduler_task = techsupport_cron.start_scheduler()
 

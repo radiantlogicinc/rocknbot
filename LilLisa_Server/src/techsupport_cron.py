@@ -20,7 +20,7 @@ import sys
 import threading
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from src import utils
 
@@ -55,12 +55,16 @@ try:
     # techsupport content (see run_startup_bootstrap below).
     import techsupport_bootstrap  # noqa: E402
 
+    # Same package: logs which Slack channel each configured channel ID names.
+    import slack_channel_check  # noqa: E402
+
     IMPORT_ERROR: Optional[str] = None
 except Exception as exc:  # noqa: BLE001 -- a broken cron install must not stop the API from serving
     run_pipeline = None  # type: ignore[assignment]
     run_product_channel_scan = None  # type: ignore[assignment]
     techsupport_preflight = None  # type: ignore[assignment]
     techsupport_bootstrap = None  # type: ignore[assignment]
+    slack_channel_check = None  # type: ignore[assignment]
     IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 _run_lock = threading.Lock()
@@ -295,7 +299,16 @@ def run_startup_preflight() -> None:
     utils.logger.error(report)
 
 
-def run_startup_bootstrap() -> Dict[str, Any]:
+def log_slack_channels() -> Dict[str, str]:
+    """Called once from main.lifespan after run_startup_preflight(): logs the
+    Slack channel name behind each configured channel ID so a wrong ID is
+    visible in the startup log. Best-effort; see cron/slack_channel_check.py."""
+    if slack_channel_check is None:
+        return {}
+    return slack_channel_check.log_configured_channels()
+
+
+def run_startup_bootstrap(reload_retrievers: Optional[Callable[[], None]] = None) -> Dict[str, Any]:
     """Called once, synchronously, from main.lifespan between
     run_startup_preflight() and start_scheduler(): clones GITHUB_REPO_URL,
     the source of truth for verified techsupport content, and rebuilds the
@@ -316,6 +329,12 @@ def run_startup_bootstrap() -> Dict[str, Any]:
     init_lance_databases(). Serving with a markdown/repo/LanceDB triple that
     is known to be out of sync is not acceptable: the next nightly run would
     append to, push, or re-embed from the wrong baseline.
+
+    main.lifespan opens the QA pairs retrievers BEFORE this runs, so a rebuild
+    here leaves them pointing at the missing or pre-rebuild table. The server
+    is not serving yet, so the pipeline's HTTP reload (POST
+    /reload_techsupport_qa_pairs/) cannot reach it; reload_retrievers is called
+    in-process instead, only when lancedb_rebuild actually ran.
     """
     if techsupport_bootstrap is None:
         # Broken image rather than missing config -- see run_startup_preflight()'s
@@ -337,6 +356,11 @@ def run_startup_bootstrap() -> Dict[str, Any]:
             "see the preceding CRITICAL log for details."
         )
     utils.logger.info("techsupport startup bootstrap complete: %s", result)
+
+    rebuild = result.get("lancedb_rebuild")
+    if reload_retrievers is not None and isinstance(rebuild, dict) and rebuild.get("ran"):
+        reload_retrievers()
+        utils.logger.info("Reloaded QA pairs retrievers/indices after techsupport startup rebuild")
     return result
 
 

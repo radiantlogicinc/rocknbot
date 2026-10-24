@@ -20,6 +20,8 @@ from expert_group import (  # noqa: E402
     ExpertResolver,
     RateLimited,
     cache_seconds_from_env,
+    group_id_for_handle,
+    group_id_for_handle_across_pages,
     group_ids_from_env,
 )
 
@@ -217,6 +219,121 @@ class RateLimitTests(unittest.TestCase):
         clock.advance(301)
         self.assertEqual(run(resolver.expert_user_ids("IDA")), ["U1"])
         self.assertEqual(sleeps, [2.0])
+
+
+class FakeFinder:
+    """Injected `usergroups.list` handle lookup stand-in."""
+
+    def __init__(self, ids):
+        self.ids = dict(ids)
+        self.calls = []
+
+    async def __call__(self, handle):
+        self.calls.append(handle)
+        return group_id_for_handle([{"id": i, "handle": h} for h, i in self.ids.items()], handle)
+
+
+class HandleTests(unittest.TestCase):
+    def test_handle_is_resolved_to_its_id_before_fetching_members(self):
+        fetcher = FakeFetcher([["U1"]])
+        finder = FakeFinder({"ida-experts": "S_IDA"})
+        resolver = make_resolver(fetcher, group_ids={"IDA": "@ida-experts", "IDDM": "S_IDDM"}, find_group_id=finder)
+
+        self.assertTrue(run(resolver.is_expert("U1", "IDA")))
+        self.assertEqual(finder.calls, ["ida-experts"])
+        self.assertEqual(fetcher.calls, ["S_IDA"])
+
+    def test_handle_is_looked_up_once_across_refreshes(self):
+        clock = FakeClock()
+        fetcher = FakeFetcher([["U1"], ["U2"]])
+        finder = FakeFinder({"ida-experts": "S_IDA"})
+        resolver = make_resolver(
+            fetcher, clock=clock, group_ids={"IDA": "@ida-experts", "IDDM": "S_IDDM"}, find_group_id=finder
+        )
+
+        run(resolver.expert_user_ids("IDA"))
+        clock.advance(301)
+        self.assertEqual(run(resolver.expert_user_ids("IDA")), ["U2"])
+        self.assertEqual(finder.calls, ["ida-experts"])
+
+    def test_id_values_never_call_the_finder(self):
+        finder = FakeFinder({})
+        resolver = make_resolver(FakeFetcher([["U1"]]), find_group_id=finder)
+
+        run(resolver.expert_user_ids("IDA"))
+        self.assertEqual(finder.calls, [])
+
+    def test_unknown_handle_fails_loudly(self):
+        fetcher = FakeFetcher([["U1"]])
+        resolver = make_resolver(
+            fetcher, group_ids={"IDA": "@nope", "IDDM": "S_IDDM"}, find_group_id=FakeFinder({"ida-experts": "S_IDA"})
+        )
+
+        with self.assertRaises(ExpertLookupError) as ctx:
+            run(resolver.expert_user_ids("IDA"))
+        self.assertEqual(ctx.exception.group_id, "@nope")
+        self.assertIn("@nope", str(ctx.exception))
+        self.assertEqual(fetcher.calls, [])
+
+    def test_handle_without_a_finder_fails_loudly(self):
+        resolver = make_resolver(FakeFetcher([["U1"]]), group_ids={"IDA": "@ida-experts", "IDDM": "S_IDDM"})
+        with self.assertRaises(ExpertLookupError):
+            run(resolver.expert_user_ids("IDA"))
+
+    def test_handle_match_is_case_insensitive(self):
+        groups = [{"id": "S1", "handle": "Other"}, {"id": "S2", "handle": "RockNBot-IDA-Experts"}]
+        self.assertEqual(group_id_for_handle(groups, "rocknbot-ida-experts"), "S2")
+
+    def test_handle_lookup_follows_cursor_until_the_handle_is_found(self):
+        pages = [
+            {
+                "usergroups": [{"id": "S1", "handle": "other"}],
+                "response_metadata": {"next_cursor": "page-2"},
+            },
+            {
+                "usergroups": [{"id": "S2", "handle": "RockNBot-IDA-Experts"}],
+                "response_metadata": {"next_cursor": "page-3"},
+            },
+            {"usergroups": [{"id": "S3", "handle": "later"}]},
+        ]
+        cursors = []
+
+        async def fetch_page(cursor):
+            cursors.append(cursor)
+            return pages[len(cursors) - 1]
+
+        self.assertEqual(run(group_id_for_handle_across_pages(fetch_page, "rocknbot-ida-experts")), "S2")
+        self.assertEqual(cursors, ["", "page-2"])
+
+    def test_handle_lookup_fails_after_the_last_page(self):
+        pages = [
+            {
+                "usergroups": [{"id": "S1", "handle": "other"}],
+                "response_metadata": {"next_cursor": "page-2"},
+            },
+            {"usergroups": [{"id": "S2", "handle": "later"}]},
+        ]
+
+        async def fetch_page(cursor):
+            return pages[0] if cursor == "" else pages[1]
+
+        with self.assertRaises(RuntimeError) as ctx:
+            run(group_id_for_handle_across_pages(fetch_page, "missing"))
+        self.assertIn("@missing", str(ctx.exception))
+
+    def test_handle_lookup_stops_when_a_cursor_repeats(self):
+        calls = []
+
+        async def fetch_page(cursor):
+            calls.append(cursor)
+            return {
+                "usergroups": [{"id": "S1", "handle": "other"}],
+                "response_metadata": {"next_cursor": "again"},
+            }
+
+        with self.assertRaises(RuntimeError):
+            run(group_id_for_handle_across_pages(fetch_page, "missing"))
+        self.assertEqual(calls, ["", "again"])
 
 
 class ConfigTests(unittest.TestCase):

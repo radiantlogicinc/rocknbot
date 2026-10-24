@@ -83,6 +83,7 @@ Ingest comments claim no PII stripping and that content “stays Slack-only.” 
 Comment says the button will be disabled if the channel env is unset. `process_msg` always attaches escalate blocks whenever it is not an expert answer. Click then logs `[ESCALATE] No techsupport channel configured` and returns after `ack()` — Slack shows a spinner, then nothing. Skip `build_escalation_blocks` when `get_techsupport_channel(product)` is None; on click, post an ephemeral/in-thread error.
 
 - **Done:** `process_msg` only attaches escalate blocks when `get_techsupport_channel(product)` is set. Click with no channel posts ephemeral (then in-thread fallback). Comment/warning text matches.
+- **Later:** `get_techsupport_channel` was removed. The button is attached when the single `TECHSUPPORT_CHANNEL_ID` is set. Every product escalates to that channel.
 - **Beads:** `pr42-blockers.4.3` **closed**.
 
 `**json.loads(raw_result)` can leave “Processing…” forever** (`pr42-blockers.4.4`)  
@@ -283,6 +284,7 @@ It still extracts Q&A and passes `(question, answer)` into `append_summary_to_ma
 Comments say IDA/IDDM/IDO channels are the same. If they ever differ, the pipeline only watches one. Assert they match at bot+pipeline startup, or sync all three.
 
 - **Done:** Bot `assert_shared_techsupport_channel_ids` raises if configured IDA/IDDM/IDO IDs disagree (unset products ignored). Also warns when IDO’s channel is unset. Pipeline `assert_pipeline_matches_product_channel_ids` raises if optional product-specific IDs in `techsupport_sync.env` differ from `TECHSUPPORT_CHANNEL_ID`. Documented in env example and Release/Deployment Notes.
+- **Later:** Those three bot variables and both assert helpers are gone. The bot and the backend each have one `TECHSUPPORT_CHANNEL_ID`, set to the same channel.
 - **Beads:** `pr42-mp.1.12` **closed**. Parent FEATURE epic `pr42-mp.1` **closed**.
 
 ### SECURITY (`pr42-mp.2`)
@@ -335,6 +337,7 @@ Worth doing; not merge-blocking.
 `lil-lisa.env.example` has `TECHSUPPORT_CHANNEL_ID_IDA` / `_IDDM` but omits `_IDO` even in the IDO optional block. The bot also only warns when IDA/IDDM are unset, not IDO. Easy to deploy IDA/IDDM escalation and forget IDO.
 
 - **Done:** Commented `TECHSUPPORT_CHANNEL_ID_IDO` in the IDO optional block of `lil-lisa/app_envfiles/lil-lisa.env.example`; comment notes it must equal the IDA/IDDM channel IDs. IDO stays optional.
+- **Later:** `TECHSUPPORT_CHANNEL_ID_IDA` / `_IDDM` / `_IDO` were replaced by one `TECHSUPPORT_CHANNEL_ID` in `lil-lisa.env.example`. IDO does not have its own tech-support channel.
 - **Beads:** `pr42-lp.1.1` **closed**.
 
 `**lillisa_server.env.example` omits `LIL_LISA_SERVER_URL**` (`pr42-lp.1.2`)  

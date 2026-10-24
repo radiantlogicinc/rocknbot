@@ -324,32 +324,39 @@ class SyncPerChannelTests(unittest.TestCase):
 class ProductChannelIdsTests(unittest.TestCase):
     def test_only_configured_products_are_returned(self):
         channels = sync_mod.product_channel_ids(
-            {"PRODUCT_CHANNEL_ID_IDA": "C_IDA", "PRODUCT_CHANNEL_ID_IDDM": "  ", "OTHER": "x"}
+            {"CHANNEL_ID_IDA": "C_IDA", "CHANNEL_ID_IDDM": "  ", "OTHER": "x"}
         )
         self.assertEqual(channels, {"IDA": "C_IDA"})
 
     def test_no_product_channels_configured(self):
         self.assertEqual(sync_mod.product_channel_ids({}), {})
 
+    def test_sync_env_fills_channel_ids_from_lil_lisa_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = Path(tmp) / "lil-lisa.env"
+            sync_file = Path(tmp) / "techsupport_sync.env"
+            bot.write_text("CHANNEL_ID_IDA=C_IDA\nCHANNEL_ID_IDDM=C_IDDM\nSLACK_BOT_TOKEN=xoxb-bot\n")
+            sync_file.write_text("SLACK_BOT_TOKEN=xoxb-sync\nTECHSUPPORT_CHANNEL_ID=C_TS\n")
+            with patch.object(sync_mod, "ENV_PATH", sync_file), patch(
+                "paths.bot_env_path", return_value=bot
+            ), patch.dict("os.environ", {}, clear=True):
+                env = sync_mod._sync_env()
+        self.assertEqual(env["CHANNEL_ID_IDA"], "C_IDA")
+        self.assertEqual(env["CHANNEL_ID_IDDM"], "C_IDDM")
+        self.assertEqual(env["SLACK_BOT_TOKEN"], "xoxb-sync")
+        self.assertNotIn("CHANNEL_ID_IDO", env)
 
-class PipelineChannelIdAssertTests(unittest.TestCase):
-    def test_matching_optional_ids_ok(self):
-        sync_mod.assert_pipeline_matches_product_channel_ids(
-            {
-                "TECHSUPPORT_CHANNEL_ID": "Cshared",
-                "TECHSUPPORT_CHANNEL_ID_IDA": "Cshared",
-                "TECHSUPPORT_CHANNEL_ID_IDDM": "Cshared",
-            }
-        )
-
-    def test_mismatch_raises(self):
-        with self.assertRaises(RuntimeError):
-            sync_mod.assert_pipeline_matches_product_channel_ids(
-                {
-                    "TECHSUPPORT_CHANNEL_ID": "Cshared",
-                    "TECHSUPPORT_CHANNEL_ID_IDA": "Cother",
-                }
-            )
+    def test_process_environment_overrides_lil_lisa_channel_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = Path(tmp) / "lil-lisa.env"
+            sync_file = Path(tmp) / "techsupport_sync.env"
+            bot.write_text("CHANNEL_ID_IDA=C_FROM_BOT\n")
+            sync_file.write_text("TECHSUPPORT_CHANNEL_ID=C_TS\n")
+            with patch.object(sync_mod, "ENV_PATH", sync_file), patch(
+                "paths.bot_env_path", return_value=bot
+            ), patch.dict("os.environ", {"CHANNEL_ID_IDA": "C_FROM_ENV"}, clear=True):
+                env = sync_mod._sync_env()
+        self.assertEqual(env["CHANNEL_ID_IDA"], "C_FROM_ENV")
 
 
 if __name__ == "__main__":

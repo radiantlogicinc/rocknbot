@@ -322,8 +322,8 @@ class PreflightHealthPayloadTests(_ResetStateMixin, unittest.TestCase):
                     "TECHSUPPORT_CHANNEL_ID": "C1",
                     "EXPERT_GROUP_ID_IDA": "S1",
                     "EXPERT_GROUP_ID_IDDM": "S2",
-                    "PRODUCT_CHANNEL_ID_IDA": "C_IDA",
-                    "PRODUCT_CHANNEL_ID_IDDM": "C_IDDM",
+                    "CHANNEL_ID_IDA": "C_IDA",
+                    "CHANNEL_ID_IDDM": "C_IDDM",
                 },
                 github_env={
                     "GITHUB_TOKEN": "ghp_SECRETPAT",

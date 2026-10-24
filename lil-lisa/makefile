@@ -6,7 +6,7 @@ AWS_ACCOUNT ?= $(shell aws sts get-caller-identity --query 'Account' --output te
 AWS_REGION ?= us-west-2
 
 IMAGE=lil-lisa
-TAG=2.3.2
+TAG=2.3.3
 
 .EXPORT_ALL_VARIABLES:
 

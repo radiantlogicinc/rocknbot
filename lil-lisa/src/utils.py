@@ -107,20 +107,6 @@ def warn_if_escalate_body_channel_mismatch(body: Optional[Dict[str, Any]], orig_
     return False
 
 
-def assert_shared_techsupport_channel_ids(product_channels: Dict[str, Optional[str]]) -> None:
-    """Production uses one shared tech-support channel for IDA/IDDM/IDO.
-
-    Configured (non-empty) IDs must all be equal. Unset products are ignored.
-    """
-    nonempty = {name: channel_id for name, channel_id in product_channels.items() if channel_id}
-    unique = set(nonempty.values())
-    if len(unique) > 1:
-        raise ValueError(
-            "TECHSUPPORT_CHANNEL_ID_IDA / _IDDM / _IDO must all be the same shared "
-            f"channel; got {nonempty}"
-        )
-
-
 def get_env_variable(var_name: str, default: Optional[str] = None) -> str:
     """
     Helper function to get the environment variable or raise exception.

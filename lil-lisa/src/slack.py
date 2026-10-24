@@ -22,6 +22,7 @@ from slack_bolt.adapter.socket_mode.async_handler import (  # type: ignore
 from slack_bolt.async_app import AsyncApp  # type: ignore
 from slack_sdk.errors import SlackApiError  # type: ignore
 
+from channel_check import log_configured_channels
 from escalation_tracker import (
     claim_escalation,
     clear_escalation,
@@ -32,11 +33,11 @@ from expert_group import (
     ExpertResolver,
     RateLimited,
     cache_seconds_from_env,
+    group_id_for_handle_across_pages,
     group_ids_from_env,
 )
 from utils import (
     ESCALATE_VALUE_QUERY_MAX_LENGTH,
-    assert_shared_techsupport_channel_ids,
     build_escalation_button_value,
     logger,
     parse_get_ans_result,
@@ -64,28 +65,15 @@ ADMIN_CHANNEL_ID_IDO = lil_lisa_env.get("ADMIN_CHANNEL_ID_IDO")
 if not CHANNEL_ID_IDO:
     logger.warning("CHANNEL_ID_IDO not found in lil-lisa.env — IDO Slack channel support will be disabled")
 
-# Techsupport escalation channels (distinct from the ADMIN_CHANNEL_ID_* bot-management channels).
-# Optional — if unset for a product, process_msg omits the escalate button for that product.
-TECHSUPPORT_CHANNEL_ID_IDDM = lil_lisa_env.get("TECHSUPPORT_CHANNEL_ID_IDDM")
-TECHSUPPORT_CHANNEL_ID_IDA = lil_lisa_env.get("TECHSUPPORT_CHANNEL_ID_IDA")
-TECHSUPPORT_CHANNEL_ID_IDO = lil_lisa_env.get("TECHSUPPORT_CHANNEL_ID_IDO")
-if not TECHSUPPORT_CHANNEL_ID_IDDM or not TECHSUPPORT_CHANNEL_ID_IDA:
+# One shared tech-support channel for every product (distinct from the
+# ADMIN_CHANNEL_ID_* bot-management channels). Optional — if unset, process_msg
+# omits the escalate button.
+TECHSUPPORT_CHANNEL_ID = (lil_lisa_env.get("TECHSUPPORT_CHANNEL_ID") or "").strip() or None
+if not TECHSUPPORT_CHANNEL_ID:
     logger.warning(
-        "TECHSUPPORT_CHANNEL_ID_IDDM/TECHSUPPORT_CHANNEL_ID_IDA not found in lil-lisa.env — "
-        "escalate-to-techsupport button will be omitted for those products"
+        "TECHSUPPORT_CHANNEL_ID not found in lil-lisa.env — "
+        "escalate-to-techsupport button will be omitted"
     )
-if not TECHSUPPORT_CHANNEL_ID_IDO:
-    logger.warning(
-        "TECHSUPPORT_CHANNEL_ID_IDO not found in lil-lisa.env — "
-        "escalate-to-techsupport button will be omitted for IDO"
-    )
-assert_shared_techsupport_channel_ids(
-    {
-        "IDA": TECHSUPPORT_CHANNEL_ID_IDA,
-        "IDDM": TECHSUPPORT_CHANNEL_ID_IDDM,
-        "IDO": TECHSUPPORT_CHANNEL_ID_IDO,
-    }
-)
 # Expert identity is a Slack user group per product. EXPERT_GROUP_ID_IDA and
 # _IDDM are required: the resolver below refuses to build without them, so the
 # bot fails to boot on a misconfiguration instead of silently having no experts.
@@ -126,6 +114,37 @@ async def _fetch_usergroup_members(usergroup_id):
     return list(resp.get("users") or [])
 
 
+async def _fetch_usergroup_page(cursor):
+    """One page of Slack `usergroups.list`. `cursor` is "" for the first page."""
+    try:
+        kwargs = {"cursor": cursor} if cursor else {}
+        return await app.client.usergroups_list(**kwargs)
+    except SlackApiError as exc:
+        response = getattr(exc, "response", None)
+        error = (response.get("error") if response is not None else None) or ""
+        if error == "ratelimited":
+            headers = getattr(response, "headers", {}) or {}
+            raise RateLimited(float(headers.get("Retry-After", 1))) from exc
+        raise
+
+
+async def _find_usergroup_id(handle):
+    """Slack `usergroups.list` lookup of an @handle's group id (needs `usergroups:read`).
+
+    Follows `response_metadata.next_cursor` until the handle is found or Slack
+    has no further page. Same error contract as _fetch_usergroup_members.
+    """
+    return await group_id_for_handle_across_pages(_fetch_usergroup_page, handle)
+
+
+async def _channel_info(channel_id):
+    """Slack `conversations.info` payload, including `ok: false` error payloads."""
+    try:
+        return (await app.client.conversations_info(channel=channel_id)).data
+    except SlackApiError as exc:
+        return exc.response.data
+
+
 # Expert identity: one Slack user group per product. Membership is cached
 # (EXPERT_GROUP_CACHE_SECONDS, default 300s) so the per-message and per-reaction
 # hot paths do not call Slack. See src/expert_group.py.
@@ -135,6 +154,7 @@ expert_resolver = ExpertResolver(
     group_ids=group_ids_from_env(lil_lisa_env),
     fetch_members=_fetch_usergroup_members,
     cache_seconds=cache_seconds_from_env(lil_lisa_env),
+    find_group_id=_find_usergroup_id,
 )
 if not expert_resolver.is_configured("IDO"):
     logger.warning("No EXPERT_GROUP_ID_IDO configured — IDO expert support disabled")
@@ -494,14 +514,9 @@ async def handle_message_events(event, say):
         logger.error(f"[PARTICIPANT COUNT FALLBACK] conversations_replies failed for channel={channel_id!r} conv_id={conv_id!r}: {exc}")
         participants = set()
 
-    # Techsupport channels are for human discussion: only respond when directly mentioned,
+    # The techsupport channel is for human discussion: only respond when directly mentioned,
     # never based on participant count.
-    techsupport_channel_ids = {
-        TECHSUPPORT_CHANNEL_ID_IDDM,
-        TECHSUPPORT_CHANNEL_ID_IDA,
-        TECHSUPPORT_CHANNEL_ID_IDO,
-    }
-    if channel_id in techsupport_channel_ids:
+    if TECHSUPPORT_CHANNEL_ID and channel_id == TECHSUPPORT_CHANNEL_ID:
         if LIL_LISA_SLACK_USERID in event.get("text", ""):
             thread_ts = event.get("thread_ts") or event.get("ts")
             await say(text=TS_CHANNEL_MENTION_REPLY, thread_ts=thread_ts)
@@ -908,7 +923,7 @@ async def process_msg(event, say):
         f"[ESCALATE BUTTON CREATE] conv_id={conv_id!r} query={text[:ESCALATE_VALUE_QUERY_MAX_LENGTH]!r}"
     )
 
-    techsupport_ready = bool(get_techsupport_channel(product))
+    techsupport_ready = bool(TECHSUPPORT_CHANNEL_ID)
 
     if needs_escalation:
         # Bot could not answer: prominent button+note when a TS channel is configured.
@@ -1017,16 +1032,15 @@ async def handle_escalate_to_techsupport(ack, body, client):
 
     warn_if_escalate_body_channel_mismatch(body, orig_channel_id)
 
-    product = determine_product(orig_channel_id)
-    techsupport_channel_id = get_techsupport_channel(product)
+    techsupport_channel_id = TECHSUPPORT_CHANNEL_ID
     if not techsupport_channel_id:
-        logger.warning(f"[ESCALATE] No techsupport channel configured for product {product} (channel {orig_channel_id})")
+        logger.warning(f"[ESCALATE] TECHSUPPORT_CHANNEL_ID is not set (channel {orig_channel_id})")
         await _notify_escalate_click_failure(
             client,
             body,
             orig_channel_id,
             orig_thread_ts,
-            "Tech support escalation is not configured for this product. Please contact an administrator.",
+            "Tech support escalation is not configured. Please contact an administrator.",
         )
         return
 
@@ -1325,25 +1339,6 @@ def determine_product(channel_id):
         return None
 
     return product
-
-
-def get_techsupport_channel(product):
-    """
-    Determines the techsupport channel to escalate to, based on product.
-
-    Parameters:
-    - product (str): "IDA", "IDDM", or "IDO".
-
-    Returns:
-    - str | None: The techsupport channel ID, or None if not configured for this product.
-    """
-    if product == "IDDM":
-        return TECHSUPPORT_CHANNEL_ID_IDDM
-    elif product == "IDA":
-        return TECHSUPPORT_CHANNEL_ID_IDA
-    elif product == "IDO":
-        return TECHSUPPORT_CHANNEL_ID_IDO
-    return None
 
 
 def check_and_update_endorsement(conv_id, action_type="endorsed", endorsement_source="message", thumbs_up=None):
@@ -1861,6 +1856,7 @@ async def start_slackapp():
         None
     """
     try:
+        await log_configured_channels(lil_lisa_env, _channel_info)
         handler = AsyncSocketModeHandler(app, SLACK_APP_TOKEN)
         await handler.start_async()
     except Exception as exc:  # pylint:disable=broad-except

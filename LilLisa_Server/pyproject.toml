@@ -1,6 +1,6 @@
 [project]
 name = "LilLisa_Server"
-version = "2.6.2"
+version = "2.6.3"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "torch",
