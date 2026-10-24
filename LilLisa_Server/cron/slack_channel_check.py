@@ -15,6 +15,8 @@ this check must not turn a Slack hiccup into a failed rollout.
 
 Channel IDs are read from cron/env/techsupport_sync.env overlaid by the
 process environment, the same load_env pattern as nightly_techsupport_sync.py.
+CHANNEL_ID_IDA / _IDDM / _IDO come from lil-lisa.env when this file does not
+set them.
 
 Usage (from src/techsupport_cron.py at server startup):
     from slack_channel_check import log_configured_channels
@@ -27,7 +29,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import requests
 from dotenv import dotenv_values
-from paths import PACKAGE_ROOT
+from paths import CHANNEL_ID_KEYS, PACKAGE_ROOT, read_lil_lisa_channel_ids
 
 ENV_PATH = PACKAGE_ROOT / "env" / "techsupport_sync.env"
 SLACK_API_BASE = "https://slack.com/api"
@@ -36,9 +38,7 @@ SLACK_TIMEOUT_SECONDS = 10
 CHANNEL_KEYS: Tuple[str, ...] = (
     "TECHSUPPORT_CHANNEL_ID",
     "ADMIN_CHANNEL_ID",
-    "PRODUCT_CHANNEL_ID_IDA",
-    "PRODUCT_CHANNEL_ID_IDDM",
-    "PRODUCT_CHANNEL_ID_IDO",
+    *CHANNEL_ID_KEYS,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,8 @@ FetchChannelInfo = Callable[[str], Mapping[str, Any]]
 
 
 def load_env() -> Dict[str, str]:
-    env: Dict[str, str] = {k: v for k, v in dotenv_values(str(ENV_PATH)).items() if v is not None}
+    env: Dict[str, str] = read_lil_lisa_channel_ids()
+    env.update({k: v for k, v in dotenv_values(str(ENV_PATH)).items() if v is not None})
     env.update(os.environ)
     return env
 

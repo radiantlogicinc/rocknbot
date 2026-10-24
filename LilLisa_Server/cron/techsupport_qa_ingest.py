@@ -11,9 +11,8 @@ golden QA pairs -- per Dhar's instruction, this step is about nailing the
 
 This store is a single table/file SHARED across IDA and IDDM (and IDO),
 not split per product. There is only one techsupport Slack channel
-(TECHSUPPORT_CHANNEL_ID in cron/env/techsupport_sync.env is the same
-channel for all products -- see lil-lisa/app_envfiles/lil-lisa.env's
-TECHSUPPORT_CHANNEL_ID_IDA/IDDM/IDO, which are all equal), and IDA/IDDM
+(TECHSUPPORT_CHANNEL_ID in cron/env/techsupport_sync.env, the same
+variable lil-lisa uses for every product), and IDA/IDDM
 content has real overlap, so a verified thread is useful to both bots.
 There's no product classification step here at all.
 

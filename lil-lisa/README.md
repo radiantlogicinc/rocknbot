@@ -88,6 +88,8 @@ The project is not currently open for contributions.
 The application uses several environment variables configured in `app_envfiles/lil-lisa.env`:
 
 - **MAX_LENGTH**: Controls the maximum length of messages sent to Slack (e.g., `MAX_LENGTH = 4000`). Messages exceeding this limit will be truncated to ensure proper formatting and delivery.
+- **CHANNEL_ID_IDA / _IDDM / _IDO**: Slack channel where that product's questions are answered. `_IDA` and `_IDDM` are required. `_IDO` is optional. The nightly expert-correction scan reads these same variables; they are not set again in `techsupport_sync.env`.
+- **TECHSUPPORT_CHANNEL_ID**: The one tech-support channel every product escalates to. Same value as the backend's `TECHSUPPORT_CHANNEL_ID`. Optional: if unset, the escalate button is omitted.
 - **EXPERT_GROUP_ID_IDA / _IDDM**: Required. Slack **user group** whose members count as experts for that product: either its ID (e.g. `S0123ABCD`, from `usergroups.list`) or its `@handle` (e.g. `@rocknbot-certified-ida-experts`), which is resolved to the ID on first use. This is the only source of expert identity, so the bot refuses to start if either is missing. The Slack app needs the `usergroups:read` scope; without it expert lookups fail loudly rather than treating everyone as a non-expert.
 - **EXPERT_GROUP_ID_IDO**: Optional, for the IDO product. With no group, nobody is an IDO expert.
 - **EXPERT_GROUP_CACHE_SECONDS**: How long expert group membership is cached before Slack is asked again, in seconds (default `300`). A failed refresh keeps serving the last cached membership; with nothing cached it raises.

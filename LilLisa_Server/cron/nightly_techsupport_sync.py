@@ -30,8 +30,9 @@ separate, later step.
 sync() is channel-parametric: sync() with no argument syncs
 TECHSUPPORT_CHANNEL_ID (the historical behaviour nightly_pipeline.py's
 techsupport loop relies on), sync(channel_id=...) syncs any other channel --
-used by nightly_pipeline.py's product-channel pass (PRODUCT_CHANNEL_ID_IDA /
-_IDDM / _IDO), which looks for expert corrections in the IDA/IDDM/IDO
+used by nightly_pipeline.py's product-channel pass (CHANNEL_ID_IDA /
+_IDDM / _IDO, the same variables lil-lisa answers questions in), which looks
+for expert corrections in the IDA/IDDM/IDO
 channels. State is therefore keyed by channel:
 
     {"version": 2,
@@ -51,9 +52,12 @@ Required env vars (see ./env/techsupport_sync.env):
                               (and the read scope for the channel type in use)
     TECHSUPPORT_CHANNEL_ID - Channel ID to sync (e.g. the test-techsupport channel)
 
-Optional (see ./env/techsupport_sync.env):
-    PRODUCT_CHANNEL_ID_IDA / _IDDM / _IDO - product channels scanned for expert
-                              corrections; a missing one disables that product.
+Optional:
+    CHANNEL_ID_IDA / _IDDM / _IDO - product channels scanned for expert
+                              corrections. Defined in lil-lisa.env (or the
+                              process environment). A missing one disables
+                              that product. Do not copy them into
+                              techsupport_sync.env.
     LIL_LISA_SLACK_USERID   - the bot's Slack user id, used to role-tag its turns.
 
 Optional knobs (env/lillisa_server.env, overridable in the process environment):
@@ -80,6 +84,7 @@ from paths import (
     PACKAGE_ROOT,
     SYNC_STATE_PATH,
     ensure_import_paths,
+    read_lil_lisa_channel_ids,
 )
 
 ensure_import_paths()
@@ -95,7 +100,7 @@ STATE_PATH = SYNC_STATE_PATH
 STATE_VERSION = 2
 
 PRODUCTS: Tuple[str, ...] = ("IDA", "IDDM", "IDO")
-PRODUCT_CHANNEL_ENV_KEY = "PRODUCT_CHANNEL_ID_{product}"
+CHANNEL_ID_ENV_KEY = "CHANNEL_ID_{product}"
 
 SLACK_API_BASE = "https://slack.com/api"
 IGNORED_SUBTYPES = {"channel_join", "channel_leave"}
@@ -128,38 +133,31 @@ PER_THREAD_THROTTLE_SECONDS = 0.3
 logger = logging.getLogger(__name__)
 
 
+def _file_env() -> Dict[str, str]:
+    """techsupport_sync.env, with CHANNEL_ID_* filled from lil-lisa.env.
+
+    The product question channels are defined once, in lil-lisa.env. A value
+    in techsupport_sync.env still wins, and the process environment (applied
+    by the callers) wins over both. Only CHANNEL_ID_* are taken from
+    lil-lisa.env; the rest of that file stays with the Slack bot.
+    """
+    env = read_lil_lisa_channel_ids()
+    env.update({k: v for k, v in dotenv_values(str(ENV_PATH)).items() if v is not None})
+    return env
+
+
 def load_env() -> Dict[str, str]:
     """Load env vars the same way lil-lisa/src/slack.py does: values from the
     env file, overridden by any matching variables already in the process
-    environment."""
-    env = dict(dotenv_values(str(ENV_PATH)))
-    env = {**env, **os.environ}
+    environment. CHANNEL_ID_* also come from lil-lisa.env when this file
+    does not set them."""
+    env = _sync_env()
 
     required = ["SLACK_BOT_TOKEN", "TECHSUPPORT_CHANNEL_ID"]
     missing = [key for key in required if not env.get(key)]
     if missing:
         raise RuntimeError(f"Missing required env var(s) {missing} - expected in {ENV_PATH}")
-    assert_pipeline_matches_product_channel_ids(env)
     return env
-
-
-def assert_pipeline_matches_product_channel_ids(env: Dict[str, str]) -> None:
-    """If product-specific channel IDs are present, they must equal TECHSUPPORT_CHANNEL_ID."""
-    canonical = env["TECHSUPPORT_CHANNEL_ID"]
-    mismatched = {
-        key: env[key]
-        for key in (
-            "TECHSUPPORT_CHANNEL_ID_IDA",
-            "TECHSUPPORT_CHANNEL_ID_IDDM",
-            "TECHSUPPORT_CHANNEL_ID_IDO",
-        )
-        if env.get(key) and env[key] != canonical
-    }
-    if mismatched:
-        raise RuntimeError(
-            "TECHSUPPORT_CHANNEL_ID_IDA/_IDDM/_IDO must equal TECHSUPPORT_CHANNEL_ID "
-            f"({canonical!r}); mismatched: {mismatched}"
-        )
 
 
 def _pipeline_env() -> Dict[str, str]:
@@ -187,14 +185,14 @@ def get_max_parent_lookups() -> int:
 
 
 def product_channel_ids(env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
-    """{"IDA": "C123", ...} for whichever PRODUCT_CHANNEL_ID_* are configured.
+    """{"IDA": "C123", ...} for whichever CHANNEL_ID_* are configured.
 
     All three are optional; a product with no channel id is simply not scanned.
     """
     env = env if env is not None else _sync_env()
     configured: Dict[str, str] = {}
     for product in PRODUCTS:
-        channel_id = (env.get(PRODUCT_CHANNEL_ENV_KEY.format(product=product)) or "").strip()
+        channel_id = (env.get(CHANNEL_ID_ENV_KEY.format(product=product)) or "").strip()
         if channel_id:
             configured[product] = channel_id
     return configured
@@ -202,9 +200,12 @@ def product_channel_ids(env: Optional[Mapping[str, str]] = None) -> Dict[str, st
 
 def _sync_env() -> Dict[str, str]:
     """techsupport_sync.env overlaid by the process environment, with none of
-    load_env()'s required-var enforcement (callers here only want optionals)."""
-    env = {k: v for k, v in dotenv_values(str(ENV_PATH)).items() if v is not None}
-    env.update(os.environ)
+    load_env()'s required-var enforcement (callers here only want optionals).
+
+    CHANNEL_ID_* missing from this file are filled from lil-lisa.env.
+    """
+    env = _file_env()
+    env.update({k: v for k, v in os.environ.items() if v is not None})
     return env
 
 

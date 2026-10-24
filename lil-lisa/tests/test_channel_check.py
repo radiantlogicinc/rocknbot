@@ -42,12 +42,12 @@ def run(coro):
 class LogConfiguredChannelsTests(unittest.TestCase):
     def test_each_configured_channel_is_logged_with_its_name(self):
         info = FakeInfo({"C1": channel("rocknbot-ida", is_member=True), "C2": channel("techsupport", is_private=True)})
-        env = {"CHANNEL_ID_IDA": "C1", "TECHSUPPORT_CHANNEL_ID_IDA": " C2 ", "CHANNEL_ID_IDO": None}
+        env = {"CHANNEL_ID_IDA": "C1", "TECHSUPPORT_CHANNEL_ID": " C2 ", "CHANNEL_ID_IDO": None}
 
         with patch.object(channel_check.logger, "info") as info_log, patch.object(channel_check.logger, "warning") as warn:
             result = run(channel_check.log_configured_channels(env, info))
 
-        self.assertEqual(result, {"CHANNEL_ID_IDA": "#rocknbot-ida", "TECHSUPPORT_CHANNEL_ID_IDA": "#techsupport [private]"})
+        self.assertEqual(result, {"CHANNEL_ID_IDA": "#rocknbot-ida", "TECHSUPPORT_CHANNEL_ID": "#techsupport [private]"})
         self.assertEqual(info.calls, ["C1", "C2"])
         self.assertIn("CHANNEL_ID_IDA = C1 (#rocknbot-ida)", info_log.call_args_list[0].args[0])
         warn.assert_not_called()
