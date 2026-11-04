@@ -1,5 +1,5 @@
 # Use a slim Python base image with uv for fast dependency installation
-FROM python:3.14.4-slim
+FROM python:3.15.1-slim
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
